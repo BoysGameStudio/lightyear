@@ -115,6 +115,12 @@ pub struct ServerCatchUpMetadata {
     /// Optional game-set lower bound on the acceptance tick. `None` accepts
     /// as soon as input coverage allows.
     pub accept_not_before: Option<Tick>,
+    /// Optional game-set upper bound on the acceptance tick. When the server
+    /// tick overshoots it (a stalled frame can advance several ticks past
+    /// `accept_not_before` in one go), acceptance keeps deferring so the
+    /// game can re-announce a fresh window — the announced boundary stays
+    /// meaningful instead of silently landing outside its window.
+    pub accept_not_after: Option<Tick>,
     snapshot_ready: Option<CatchUpSnapshotReady>,
 }
 
@@ -123,6 +129,7 @@ impl ServerCatchUpMetadata {
         Self {
             input_safe_tick,
             accept_not_before: None,
+            accept_not_after: None,
             snapshot_ready: None,
         }
     }
@@ -136,6 +143,7 @@ impl ServerCatchUpMetadata {
             // (their `input_safe_tick` sentinel would otherwise stamp a
             // garbage announce tick).
             accept_not_before: Some(Tick(u32::MAX)),
+            accept_not_after: None,
             snapshot_ready: Some(CatchUpSnapshotReady::not_required()),
         }
     }
@@ -364,6 +372,18 @@ fn accept_buffered_catch_up_requests(
                 ?server_tick,
                 accept_not_before = ?metadata.accept_not_before,
                 "deferring buffered CatchUpRequest until game-announced accept tick"
+            );
+            continue;
+        }
+        if metadata
+            .accept_not_after
+            .is_some_and(|not_after| server_tick > not_after)
+        {
+            debug!(
+                ?client_link_entity,
+                ?server_tick,
+                accept_not_after = ?metadata.accept_not_after,
+                "deferring buffered CatchUpRequest past game-announced accept window"
             );
             continue;
         }
