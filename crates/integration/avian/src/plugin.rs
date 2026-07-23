@@ -542,7 +542,12 @@ impl LightyearAvianPlugin {
         }
     }
 
-    fn repair_missing_contact_pairs_from_restored_aabbs(
+    /// Re-insert every missing broad-phase pair into the contact graph in
+    /// canonical `(tree_type, proxy id)` order. Exposed for game-side
+    /// symmetric solver-state resets (e.g. at a late-join catch-up boundary):
+    /// after clearing `ContactGraph`, this rebuilds exactly the live pairs in
+    /// the same order on every peer.
+    pub fn repair_missing_contact_pairs_from_restored_aabbs(
         trees: &ColliderTrees,
         colliders: &Query<(&ColliderTreeProxyKey, &EnlargedAabb), Without<ColliderDisabled>>,
         contact_graph: &mut ContactGraph,

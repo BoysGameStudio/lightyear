@@ -52,6 +52,8 @@ pub mod prelude {
     };
     #[cfg(all(feature = "client", feature = "replication"))]
     pub use crate::late_join::{CatchUpClientTimeout, CatchUpManager};
+    #[cfg(all(feature = "server", feature = "replication"))]
+    pub use crate::late_join::ServerCatchUpMetadata;
     pub use crate::mode::CatchUpMode;
     pub use crate::plugin::DeterministicReplicationPlugin;
     pub use lightyear_prediction::rollback::CatchUpGated;

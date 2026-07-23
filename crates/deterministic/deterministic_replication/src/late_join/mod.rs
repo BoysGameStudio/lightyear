@@ -74,6 +74,8 @@ mod shared;
 
 #[cfg(feature = "client")]
 pub use client::{CatchUpClientTimeout, CatchUpManager};
+#[cfg(feature = "server")]
+pub use server::ServerCatchUpMetadata;
 pub use shared::{
     AppCatchUpExt, CatchUpRegistry, CatchUpRequest, CatchUpSnapshotReady, CatchUpSystems,
     HasCaughtUp,

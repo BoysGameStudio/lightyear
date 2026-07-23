@@ -100,9 +100,21 @@ pub(crate) fn build(app: &mut App) {
 ///
 /// Once accepted, `snapshot_ready` is filled and emitted only after Replicon's
 /// send set has revealed the gated components for this client.
+///
+/// The component is public so that game code can further delay acceptance by
+/// setting [`ServerCatchUpMetadata::accept_not_before`]: acceptance then waits
+/// until the server tick reaches that value, in addition to the input-safe
+/// coverage check. Games use this to announce a deterministic catch-up
+/// boundary tick to every peer (e.g. for a symmetric solver-state reset)
+/// before the snapshot goes out.
 #[derive(Component, Debug, Clone)]
-struct ServerCatchUpMetadata {
-    input_safe_tick: Tick,
+pub struct ServerCatchUpMetadata {
+    /// Newest client-advertised input-safe tick; acceptance requires the
+    /// server tick to have advanced beyond it.
+    pub input_safe_tick: Tick,
+    /// Optional game-set lower bound on the acceptance tick. `None` accepts
+    /// as soon as input coverage allows.
+    pub accept_not_before: Option<Tick>,
     snapshot_ready: Option<CatchUpSnapshotReady>,
 }
 
@@ -110,6 +122,7 @@ impl ServerCatchUpMetadata {
     fn new(input_safe_tick: Tick) -> Self {
         Self {
             input_safe_tick,
+            accept_not_before: None,
             snapshot_ready: None,
         }
     }
@@ -117,6 +130,7 @@ impl ServerCatchUpMetadata {
     fn not_required() -> Self {
         Self {
             input_safe_tick: Tick(u32::MAX),
+            accept_not_before: None,
             snapshot_ready: Some(CatchUpSnapshotReady::not_required()),
         }
     }
@@ -333,6 +347,18 @@ fn accept_buffered_catch_up_requests(
                 ?server_tick,
                 input_safe_tick = ?metadata.input_safe_tick,
                 "deferring buffered CatchUpRequest until server tick advances past input-safe tick"
+            );
+            continue;
+        }
+        if metadata
+            .accept_not_before
+            .is_some_and(|not_before| server_tick < not_before)
+        {
+            debug!(
+                ?client_link_entity,
+                ?server_tick,
+                accept_not_before = ?metadata.accept_not_before,
+                "deferring buffered CatchUpRequest until game-announced accept tick"
             );
             continue;
         }
