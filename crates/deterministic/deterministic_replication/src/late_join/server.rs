@@ -130,7 +130,12 @@ impl ServerCatchUpMetadata {
     fn not_required() -> Self {
         Self {
             input_safe_tick: Tick(u32::MAX),
-            accept_not_before: None,
+            // Sentinel "already accepted": game-side accept-gate stamping
+            // skips metadata whose gate is at or past the coverage floor,
+            // so this keeps not-required clients out of game-side gating
+            // (their `input_safe_tick` sentinel would otherwise stamp a
+            // garbage announce tick).
+            accept_not_before: Some(Tick(u32::MAX)),
             snapshot_ready: Some(CatchUpSnapshotReady::not_required()),
         }
     }
