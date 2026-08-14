@@ -66,21 +66,22 @@ pub struct CatchUpManager {
     pub(crate) requests_sent: u8,
     pub(crate) request_sent_at_tick: Option<Tick>,
     pub(crate) suppress_checksums: bool,
-    /// Checksum reports are only meaningful for state ticks the client
-    /// actually replayed: history older than the catch-up snapshot tick is
-    /// approximate by design (seeded from the snapshot, not simulated), and
-    /// the first ticks after it still churn under the post-catch-up
-    /// second-chance re-roll. Since reports target a state tick well in the
-    /// past (the rollback-settled horizon), the in-flight
-    /// `suppress_checksums` window no longer covers them — this floor does.
-    /// `None` until the initial catch-up completes.
+    /// Checksum reports are only meaningful for state ticks whose history
+    /// this client wrote with its own live simulation. Everything earlier
+    /// is either seeded (pre-snapshot ticks resolve to snapshot values by
+    /// at-or-before reads — approximate by design) or was written by
+    /// catch-up replay passes whose entity set was still settling. The
+    /// in-flight `suppress_checksums` window cannot cover those ticks
+    /// because reports target a state tick well in the past (the
+    /// rollback-settled horizon) — this floor does: the local tick at
+    /// catch-up completion, plus a settle margin for late input
+    /// corrections. `None` until the initial catch-up completes.
     pub(crate) report_floor: Option<Tick>,
 }
 
-/// Settle margin applied to the catch-up report floor: the replayed span
-/// right after the snapshot tick still gets rewritten by second-chance
-/// re-rolls and late input corrections; matches the relay resync
-/// suppression window measured for the same effect.
+/// Settle margin applied past the catch-up completion tick before checksum
+/// reports resume; matches the relay resync suppression window measured
+/// for the same effect (late corrections still landing post-completion).
 pub(crate) const CATCH_UP_REPORT_SETTLE_TICKS: u32 = 40;
 
 impl CatchUpManager {
@@ -222,6 +223,7 @@ fn receive_catch_up_snapshot_ready(
     trigger: On<RemoteEvent<CatchUpSnapshotReady>>,
     mut manager: Single<&mut CatchUpManager, With<Client>>,
     gated: Query<Entity, With<CatchUpGated>>,
+    timeline: Res<LocalTimeline>,
     mut commands: Commands,
 ) {
     if manager.completed {
@@ -236,7 +238,7 @@ fn receive_catch_up_snapshot_ready(
     if event.is_not_required() {
         debug!("server reported catch-up is not required");
         commands.trigger(event.clone());
-        complete_catch_up(&mut manager, &gated, &mut commands);
+        complete_catch_up(&mut manager, &gated, &mut commands, &timeline);
         return;
     }
     if manager
@@ -368,6 +370,7 @@ fn trigger_catch_up_snapshot_activation(
 fn finish_catch_up_snapshot_activation(
     mut client: Query<(&mut CatchUpManager, &mut PredictionManager), With<Client>>,
     gated: Query<Entity, With<CatchUpGated>>,
+    timeline: Res<LocalTimeline>,
     mut commands: Commands,
 ) {
     let Ok((mut manager, mut prediction_manager)) = client.single_mut() else {
@@ -381,22 +384,26 @@ fn finish_catch_up_snapshot_activation(
         commands.entity(entity).try_remove::<DisableRollback>();
     }
 
-    complete_catch_up(&mut manager, &gated, &mut commands);
+    complete_catch_up(&mut manager, &gated, &mut commands, &timeline);
 }
 
 fn complete_catch_up(
     manager: &mut CatchUpManager,
     gated: &Query<Entity, With<CatchUpGated>>,
     commands: &mut Commands,
+    timeline: &LocalTimeline,
 ) {
     for entity in gated.iter() {
         commands.entity(entity).remove::<CatchUpGated>();
     }
     manager.completed = true;
-    manager.report_floor = manager
-        .activating_snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.server_tick + CATCH_UP_REPORT_SETTLE_TICKS as i32);
+    // Reports resume only for state ticks at/past this floor: everything
+    // earlier was seeded or replay-written during catch-up (see the field
+    // doc). Never lower an already-set floor.
+    let floor = timeline.tick() + CATCH_UP_REPORT_SETTLE_TICKS as i32;
+    if manager.report_floor.is_none_or(|f| floor > f) {
+        manager.report_floor = Some(floor);
+    }
     manager.pending_snapshot = None;
     manager.requests_sent = 0;
     manager.request_sent_at_tick = None;
