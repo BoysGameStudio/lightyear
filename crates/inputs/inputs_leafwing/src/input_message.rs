@@ -20,6 +20,38 @@ impl<A: LeafwingUserAction> InputSnapshot for LeafwingSnapshot<A> {
     fn decay_tick(&mut self, tick_duration: Duration) {
         self.tick(Instant::now(), Instant::now() + tick_duration);
     }
+
+    /// Semantic equality: the wire format (`ActionDiff`) only carries
+    /// pressed-ness and axis values, not button transition phases
+    /// (`JustPressed` vs `Pressed`) or the update/fixed-update scope
+    /// fields. Two decodings of the same sender tick can therefore differ
+    /// in those details without any input change; comparing them with
+    /// `==` would false-positive on every redundant re-send.
+    fn equivalent_to(&self, other: &Self) -> bool {
+        for (action, data) in self.0.all_action_data() {
+            if data.disabled {
+                continue;
+            }
+            let Some(other_data) = other.0.action_data(action) else {
+                return false;
+            };
+            let same = match (&data.kind_data, &other_data.kind_data) {
+                (ActionKindData::Button(a), ActionKindData::Button(b)) => {
+                    a.state.pressed() == b.state.pressed()
+                }
+                (ActionKindData::Axis(a), ActionKindData::Axis(b)) => a.value == b.value,
+                (ActionKindData::DualAxis(a), ActionKindData::DualAxis(b)) => a.pair == b.pair,
+                (ActionKindData::TripleAxis(a), ActionKindData::TripleAxis(b)) => {
+                    a.triple == b.triple
+                }
+                _ => false,
+            };
+            if !same {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deref, DerefMut)]
@@ -571,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_buffer_ignores_mismatches_at_confirmed_ticks() {
+    fn test_update_buffer_corrects_mismatches_at_confirmed_ticks() {
         let mut input_buffer = InputBuffer::default();
         let mut confirmed = ActionState::<Action>::default();
         confirmed.press(&Action::Jump);
@@ -581,15 +613,45 @@ mod tests {
         let mut overlapping = ActionState::<Action>::default();
         overlapping.press(&Action::Run);
         let sequence = LeafwingSequence::<Action> {
-            // Tick 2 is redundant history and must not be compared or overwritten.
+            // Tick 2 is redundant history, but its content DIFFERS from the
+            // buffered value (the buffered one came from a gap-fill or a
+            // reordering): the real value must win and the mismatch must be
+            // reported so the receiver can roll back and repair.
             start_state: overlapping,
-            // Tick 3 is new and is the first tick eligible for mismatch detection.
+            // Tick 3 is new.
             diffs: vec![vec![]],
         };
 
         let mismatch = sequence.update_buffer(&mut input_buffer, Tick(3), Duration::default());
 
-        assert_eq!(mismatch, Some(Tick(3)));
+        assert_eq!(mismatch, Some(Tick(2)));
+        let mut expected = ActionState::<Action>::default();
+        expected.press(&Action::Run);
+        assert_eq!(input_buffer.get(Tick(2)).unwrap().0, expected);
+    }
+
+    #[test]
+    fn test_update_buffer_ignores_equal_content_at_confirmed_ticks() {
+        let mut input_buffer = InputBuffer::<LeafwingSnapshot<Action>, Action>::default();
+        let mut confirmed = ActionState::<Action>::default();
+        confirmed.press(&Action::Jump);
+        input_buffer.set(Tick(2), confirmed.clone().into());
+        input_buffer.last_remote_tick = Some(Tick(2));
+
+        // Same pressed content, but freshly constructed transition phases
+        // (the wire does not carry JustPressed vs Pressed): redundant
+        // history must NOT produce a mismatch. Only tick 2 is covered
+        // here; new ticks take the pre-existing strict path.
+        let mut resent = ActionState::<Action>::default();
+        resent.press(&Action::Jump);
+        let sequence = LeafwingSequence::<Action> {
+            start_state: resent,
+            diffs: vec![],
+        };
+
+        let mismatch = sequence.update_buffer(&mut input_buffer, Tick(2), Duration::default());
+
+        assert_eq!(mismatch, None);
         assert_eq!(input_buffer.get(Tick(2)).unwrap().0, confirmed);
     }
 }
