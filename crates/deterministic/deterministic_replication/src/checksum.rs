@@ -103,14 +103,18 @@ pub struct ChecksumSendPlugin;
 #[cfg(feature = "client")]
 impl ChecksumSendPlugin {
     /// Compute a checksum over all deterministic entities' hashable
-    /// components at `LastConfirmedInput.tick` and send it to the server.
+    /// components and send it to the server.
     ///
-    /// Reports are FINAL-ONLY: a tick is reported once it is older than
-    /// the rollback horizon (`max_rollback_ticks`), after which no input
-    /// correction can rewrite its prediction history. Reporting earlier
-    /// would send hashes that a repairing rollback can still invalidate —
-    /// the stale report then reads as a mismatch even though both peers'
-    /// states agree (pure comparison noise that swamps real divergence).
+    /// Reports are FINAL-ONLY: the reported tick is
+    /// `current_tick - max_rollback_ticks - 1`. Past that rollback horizon
+    /// no input correction can rewrite the tick's prediction history, so
+    /// every report is final and every logged mismatch is a real committed
+    /// divergence. Reporting `LastConfirmedInput.tick` directly (as
+    /// before) sends hashes that a repairing rollback can still
+    /// invalidate — the stale report reads as a mismatch even though both
+    /// peers' states agree, scattering comparison noise across the run.
+    /// The tick must also be confirmed (`<= LastConfirmedInput.tick`):
+    /// hashing an unconfirmed tick would report prediction garbage.
     fn compute_and_send_checksum(
         mut world: ChecksumWorld<'_, '_, true>,
         local_timeline: Res<LocalTimeline>,
@@ -130,15 +134,15 @@ impl ChecksumSendPlugin {
         let mut checksum = 0u64;
         let current_tick = local_timeline.tick();
         let (last_confirmed_input, prediction_manager, mut sender) = client.into_inner();
-        let tick = last_confirmed_input.tick.get();
+        let confirmed_tick = last_confirmed_input.tick.get();
         // only compute the checksum when we have received remote inputs
-        if tick > current_tick {
+        if confirmed_tick > current_tick {
             return;
         }
-        // Only report a tick once no rollback can still rewrite it.
-        if current_tick - tick
-            <= i32::from(prediction_manager.rollback_policy.max_rollback_ticks)
-        {
+        // The newest tick no future rollback can still rewrite.
+        let tick = current_tick
+            - (u32::from(prediction_manager.rollback_policy.max_rollback_ticks) + 1);
+        if tick > confirmed_tick {
             return;
         }
         #[cfg(feature = "replication")]
@@ -179,7 +183,7 @@ impl ChecksumSendPlugin {
         });
         debug!(
             ?current_tick,
-            "Computed checksum for LastConfirmedInput tick {:?}: {:016x}", tick, checksum
+            "Computed checksum for settled tick {:?}: {:016x}", tick, checksum
         );
 
         sender.send::<InputChannel>(ChecksumMessage { tick, checksum });
