@@ -40,7 +40,9 @@ use lightyear_messages::prelude::MessageSender;
 #[cfg(feature = "server")]
 use lightyear_messages::receive::MessageReceiver;
 #[cfg(feature = "client")]
-use lightyear_prediction::manager::{LastConfirmedInput, StateRollbackMetadata};
+use lightyear_prediction::manager::{
+    LastConfirmedInput, PredictionManager, StateRollbackMetadata,
+};
 #[cfg(feature = "client")]
 use lightyear_sync::prelude::{InputTimeline, IsSynced};
 use serde::{Deserialize, Serialize};
@@ -102,11 +104,22 @@ pub struct ChecksumSendPlugin;
 impl ChecksumSendPlugin {
     /// Compute a checksum over all deterministic entities' hashable
     /// components at `LastConfirmedInput.tick` and send it to the server.
+    ///
+    /// Reports are FINAL-ONLY: a tick is reported once it is older than
+    /// the rollback horizon (`max_rollback_ticks`), after which no input
+    /// correction can rewrite its prediction history. Reporting earlier
+    /// would send hashes that a repairing rollback can still invalidate —
+    /// the stale report then reads as a mismatch even though both peers'
+    /// states agree (pure comparison noise that swamps real divergence).
     fn compute_and_send_checksum(
         mut world: ChecksumWorld<'_, '_, true>,
         local_timeline: Res<LocalTimeline>,
         client: Single<
-            (&LastConfirmedInput, &mut MessageSender<ChecksumMessage>),
+            (
+                &LastConfirmedInput,
+                &PredictionManager,
+                &mut MessageSender<ChecksumMessage>,
+            ),
             (With<Client>, With<IsSynced<InputTimeline>>),
         >,
         #[cfg(feature = "replication")] catchup_manager: Option<
@@ -116,10 +129,16 @@ impl ChecksumSendPlugin {
     ) {
         let mut checksum = 0u64;
         let current_tick = local_timeline.tick();
-        let (last_confirmed_input, mut sender) = client.into_inner();
+        let (last_confirmed_input, prediction_manager, mut sender) = client.into_inner();
         let tick = last_confirmed_input.tick.get();
         // only compute the checksum when we have received remote inputs
         if tick > current_tick {
+            return;
+        }
+        // Only report a tick once no rollback can still rewrite it.
+        if current_tick - tick
+            <= i32::from(prediction_manager.rollback_policy.max_rollback_ticks)
+        {
             return;
         }
         #[cfg(feature = "replication")]
@@ -172,6 +191,11 @@ pub struct ChecksumMessage {
     pub tick: Tick,
     pub checksum: u64,
 }
+
+/// How many ticks of checksum history the server keeps for comparison.
+/// Must exceed the client reporting horizon (`max_rollback_ticks`, up to
+/// 100) plus report flight time and any input-pacing stall backlog.
+const CHECKSUM_HISTORY_TICKS: u32 = 192;
 
 #[cfg(feature = "client")]
 impl Plugin for ChecksumSendPlugin {
@@ -287,8 +311,12 @@ impl ChecksumReceivePlugin {
     ) {
         let tick = timeline.tick();
         let mut history = history.into_inner();
-        // keep only the last 30 ticks of history
-        history.history.retain(|t, _| *t >= tick - 30);
+        // Clients report only settled ticks (older than their rollback
+        // horizon), and the server can trail under load (input pacing
+        // stalls), so the retention must comfortably exceed the reporting
+        // horizon — 30 ticks would expire before a final-only report for
+        // the tick could ever arrive.
+        history.history.retain(|t, _| *t >= tick - CHECKSUM_HISTORY_TICKS);
     }
 }
 
