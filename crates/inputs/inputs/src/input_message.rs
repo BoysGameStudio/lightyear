@@ -60,6 +60,16 @@ pub trait InputSnapshot: Send + Sync + Debug + Clone + PartialEq + Default + 'st
     /// By default Snapshots do not decay, i.e. we predict that they stay the same and the user
     /// keeps pressing the same button.
     fn decay_tick(&mut self, tick_duration: Duration);
+
+    /// Semantic equality for a re-received tick. The wire encoding can be
+    /// lossy with respect to transport representation details (e.g.
+    /// leafwing button transition phases), so a re-sent tick can decode to
+    /// a snapshot that differs from the buffered one without any actual
+    /// input change. Corrections for already-covered ticks must compare
+    /// semantically, or every redundant re-send risks a false mismatch.
+    fn equivalent_to(&self, other: &Self) -> bool {
+        self == other
+    }
 }
 
 /// A QueryData that contains the queryable state that contains the current state of the Action at the given tick
@@ -200,7 +210,32 @@ pub trait ActionStateSequence:
                 }
                 // Inputs at or before last_remote_tick were already received. Messages include
                 // overlapping history for reliability, but those inputs are immutable.
-                if last_remote_tick.is_none_or(|t| tick > t) {
+                // NOTE: we still compare ticks already covered by an earlier
+                // message. The sender never rewrites its history, so an equal
+                // value is a no-op — but a tick whose buffered value came from
+                // a gap-fill fabrication (`set_raw` SameAsPrecedent fill) or an
+                // out-of-order delivery was never actually received, and the
+                // real value must win or the mispredicted tick is committed
+                // forever. The comparison is semantic (`equivalent_to`): the
+                // wire encoding does not preserve transport representation
+                // details, so full-equality would false-positive here.
+                if last_remote_tick.is_some_and(|t| tick <= t)
+                    && input_buffer
+                        .start_tick
+                        .is_some_and(|start| tick >= start)
+                    && let Some(incoming) = &latest_received_input
+                {
+                    let differs = match input_buffer.get(tick) {
+                        Some(stored) => !stored.equivalent_to(incoming),
+                        None => true,
+                    };
+                    if differs {
+                        input_buffer.set_raw(tick, Compressed::Input(incoming.clone()));
+                        earliest_mismatch = Some(tick);
+                    }
+                    continue;
+                }
+            if last_remote_tick.is_none_or(|t| tick > t) {
                     if match (&previous_predicted_input, &latest_received_input) {
                         (Some(prev), Some(latest)) => prev == latest,
                         (None, None) => true,
