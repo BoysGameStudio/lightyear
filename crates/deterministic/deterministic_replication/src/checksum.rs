@@ -146,9 +146,18 @@ impl ChecksumSendPlugin {
             return;
         }
         #[cfg(feature = "replication")]
+        // Never report state ticks from before the catch-up report floor:
+        // the client's history there is seeded, not simulated (approximate
+        // by design), and the first ticks after the snapshot still churn.
+        if catchup_manager.as_ref().is_some_and(|manager| {
+            manager.report_floor.is_some_and(|floor| tick < floor)
+        }) {
+            return;
+        }
+        #[cfg(feature = "replication")]
         // Skip while catch-up is running. The client is intentionally hashing
         // pre-catch-up state until the bundled snapshot has been replayed.
-        if catchup_manager.is_some_and(|manager| manager.suppresses_checksums()) {
+        if catchup_manager.as_ref().is_some_and(|manager| manager.suppresses_checksums()) {
             return;
         }
         // Skip if a one-shot forced rollback is scheduled but not yet

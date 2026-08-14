@@ -66,7 +66,22 @@ pub struct CatchUpManager {
     pub(crate) requests_sent: u8,
     pub(crate) request_sent_at_tick: Option<Tick>,
     pub(crate) suppress_checksums: bool,
+    /// Checksum reports are only meaningful for state ticks the client
+    /// actually replayed: history older than the catch-up snapshot tick is
+    /// approximate by design (seeded from the snapshot, not simulated), and
+    /// the first ticks after it still churn under the post-catch-up
+    /// second-chance re-roll. Since reports target a state tick well in the
+    /// past (the rollback-settled horizon), the in-flight
+    /// `suppress_checksums` window no longer covers them — this floor does.
+    /// `None` until the initial catch-up completes.
+    pub(crate) report_floor: Option<Tick>,
 }
+
+/// Settle margin applied to the catch-up report floor: the replayed span
+/// right after the snapshot tick still gets rewritten by second-chance
+/// re-rolls and late input corrections; matches the relay resync
+/// suppression window measured for the same effect.
+pub(crate) const CATCH_UP_REPORT_SETTLE_TICKS: u32 = 40;
 
 impl CatchUpManager {
     /// Returns true while the client is running with intentionally stale
@@ -378,6 +393,10 @@ fn complete_catch_up(
         commands.entity(entity).remove::<CatchUpGated>();
     }
     manager.completed = true;
+    manager.report_floor = manager
+        .activating_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.server_tick + CATCH_UP_REPORT_SETTLE_TICKS as i32);
     manager.pending_snapshot = None;
     manager.requests_sent = 0;
     manager.request_sent_at_tick = None;
