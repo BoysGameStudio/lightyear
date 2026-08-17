@@ -391,6 +391,12 @@ fn compute_history_checksum(world: &mut ChecksumWorld<'_, '_, true>, tick: Tick)
                         hash_fn.inner,
                     ) {
                         hashed_components += 1;
+                        trace!(
+                            "Hashed component {:?} from entity {:?} into checksum for tick {:?}",
+                            component_id,
+                            entity.id(),
+                            tick
+                        );
                         // XOR the hashes together to get an order-independent checksum
                         checksum ^= hasher.finish();
                     }
