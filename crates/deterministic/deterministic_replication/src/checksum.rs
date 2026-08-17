@@ -43,9 +43,9 @@ use lightyear_messages::prelude::MessageSender;
 #[cfg(any(feature = "p2p", feature = "server"))]
 use lightyear_messages::receive::MessageReceiver;
 #[cfg(feature = "client")]
-use lightyear_prediction::manager::{LastConfirmedInput, StateRollbackMetadata};
+use lightyear_prediction::manager::{LastConfirmedInput, PredictionManager, StateRollbackMetadata};
 #[cfg(feature = "client")]
-use lightyear_sync::prelude::SyncedLocalTimeline;
+use lightyear_sync::prelude::{InputTimelineConfig, SyncedLocalTimeline};
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "p2p", feature = "server"))]
 use tracing::error;
@@ -57,7 +57,7 @@ pub struct ChecksumHistory {
     history: BTreeMap<Tick, u64>,
 }
 
-const CHECKSUM_HISTORY_TICKS: u32 = 30;
+const CHECKSUM_HISTORY_TICKS: u32 = 192;
 
 /// Local and remote P2P checksums waiting for their matching sample.
 ///
@@ -189,7 +189,20 @@ pub struct ChecksumSendPlugin;
 
 #[cfg(feature = "client")]
 impl ChecksumSendPlugin {
-    /// Compute and send the checksum at the complete confirmed-input frontier.
+    /// Compute and send the checksum for the newest rollback-settled tick.
+    ///
+    /// Reports are FINAL-ONLY: the reported tick is
+    /// `current_tick - max_rollback_ticks - 1`. Past that rollback horizon
+    /// no input correction can rewrite the tick's prediction history, so
+    /// every report is final and every logged mismatch is a real committed
+    /// divergence. Reporting `LastConfirmedInput.tick` directly (as
+    /// before) sends hashes that a repairing rollback can still
+    /// invalidate — the stale report reads as a mismatch even though both
+    /// peers' states agree, scattering comparison noise across the run.
+    /// The tick must also be confirmed (`<= LastConfirmedInput.tick`):
+    /// hashing an unconfirmed tick would report prediction garbage.
+    /// `PredictionHistory` resolves at-or-before, so the older read is
+    /// exact.
     ///
     /// This runs in `PostUpdate`, after both this frame's rollback replay and
     /// [`InputSystems::UpdateRemoteInputTicks`], so the current [`LastConfirmedInput`] can be read
@@ -201,6 +214,8 @@ impl ChecksumSendPlugin {
         metadata: Res<NetworkingMetadata>,
         mut senders: Query<&mut MessageSender<ChecksumMessage>>,
         last_confirmed_input: Res<LastConfirmedInput>,
+        prediction_manager: Res<PredictionManager>,
+        input_config: Res<InputTimelineConfig>,
         #[cfg(feature = "p2p")] mut pending_checksums: ResMut<PendingP2PChecksums>,
         #[cfg(feature = "replication")] catchup_managers: Query<&CatchUpManager, With<Client>>,
         state_metadata: Res<StateRollbackMetadata>,
@@ -216,6 +231,22 @@ impl ChecksumSendPlugin {
         if confirmed_tick > current_tick {
             return;
         }
+        // The newest tick no future rollback can still rewrite. Guard the
+        // subtraction explicitly: Tick arithmetic saturates, and a
+        // saturating read would spuriously report tick 0 early in the
+        // session.
+        let settle_ticks = u32::from(
+            prediction_manager
+                .rollback_policy
+                .effective_max_rollback_ticks(&input_config),
+        ) + 1;
+        if current_tick.0 < settle_ticks {
+            return;
+        }
+        let tick = current_tick - settle_ticks;
+        if tick > confirmed_tick {
+            return;
+        }
         let conventional_link = match metadata.mode {
             NetworkTopology::Client(link) | NetworkTopology::HostClient { client: link, .. } => {
                 Some(link)
@@ -228,12 +259,21 @@ impl ChecksumSendPlugin {
             | NetworkTopology::Invalid(_) => return,
         };
         #[cfg(feature = "replication")]
+        let catchup_manager =
+            conventional_link.and_then(|link| catchup_managers.get(link).ok());
+        #[cfg(feature = "replication")]
+        // Never report state ticks from before the catch-up report floor:
+        // the client's history there is seeded, not simulated (approximate
+        // by design), and the first ticks after the snapshot still churn.
+        if catchup_manager
+            .is_some_and(|manager| manager.report_floor.is_some_and(|floor| tick < floor))
+        {
+            return;
+        }
+        #[cfg(feature = "replication")]
         // Skip while catch-up is running. The client is intentionally hashing
         // pre-catch-up state until the bundled snapshot has been replayed.
-        if conventional_link
-            .and_then(|link| catchup_managers.get(link).ok())
-            .is_some_and(CatchUpManager::suppresses_checksums)
-        {
+        if catchup_manager.is_some_and(CatchUpManager::suppresses_checksums) {
             return;
         }
         // Skip if a one-shot forced rollback is scheduled but not yet
@@ -247,18 +287,15 @@ impl ChecksumSendPlugin {
         world.update_archetypes();
 
         if let Some(link) = conventional_link {
-            let checksum = compute_history_checksum(&mut world, confirmed_tick);
+            let checksum = compute_history_checksum(&mut world, tick);
             debug!(
                 ?current_tick,
-                "Computed checksum for LastConfirmedInput tick {:?}: {:016x}",
-                confirmed_tick,
+                "Computed checksum for rollback-settled tick {:?}: {:016x}",
+                tick,
                 checksum
             );
             if let Ok(mut sender) = senders.get_mut(link) {
-                sender.send::<InputChannel>(ChecksumMessage {
-                    tick: confirmed_tick,
-                    checksum,
-                });
+                sender.send::<InputChannel>(ChecksumMessage { tick, checksum });
             }
             return;
         }
@@ -268,10 +305,10 @@ impl ChecksumSendPlugin {
             let NetworkTopology::P2P { connected, .. } = &metadata.mode else {
                 return;
             };
-            let checksum = compute_history_checksum(&mut world, confirmed_tick);
-            pending_checksums.record_local(confirmed_tick, checksum, log_p2p_comparison);
-            pending_checksums.clean(confirmed_tick);
-            Self::send_p2p_checksum(&mut senders, connected, confirmed_tick, checksum);
+            let checksum = compute_history_checksum(&mut world, tick);
+            pending_checksums.record_local(tick, checksum, log_p2p_comparison);
+            pending_checksums.clean(tick);
+            Self::send_p2p_checksum(&mut senders, connected, tick, checksum);
         }
     }
 
