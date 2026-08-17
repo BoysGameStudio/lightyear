@@ -533,6 +533,13 @@ impl ChecksumReceivePlugin {
             if let Ok(history) = server.get(link_of.server) {
                 receiver.receive().for_each(|message| {
                     let Some(&expected) = history.history.get(&message.tick) else {
+                        trace!(
+                            ?remote_id,
+                            ?message.tick,
+                            oldest = ?history.history.keys().next(),
+                            newest = ?history.history.keys().next_back(),
+                            "checksum receive: tick outside server retention"
+                        );
                         return;
                     };
                     if expected == message.checksum {
