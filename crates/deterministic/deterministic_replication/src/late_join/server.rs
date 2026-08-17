@@ -397,6 +397,8 @@ fn accept_buffered_catch_up_requests(
         metadata.snapshot_ready = Some(CatchUpSnapshotReady {
             server_tick,
             replicon_tick,
+            // Stamped with the real count at emit time.
+            gated_entities: 0,
         });
         commands.entity(client_link_entity).insert(HasCaughtUp);
     }
@@ -414,19 +416,25 @@ fn emit_catch_up_snapshot_ready(
         &ServerCatchUpMetadata,
         &mut EventSender<CatchUpSnapshotReady>,
     )>,
+    gated: Query<(), With<CatchUpGated>>,
     mut commands: Commands,
 ) {
+    // The gated manifest at send time: how many entities the client must
+    // see before a no-rollback completion may enable game rules.
+    let gated_entities = gated.iter().count() as u32;
     for (client_link_entity, metadata, mut sender) in query.iter_mut() {
         let Some(snapshot_ready) = metadata.snapshot_ready.as_ref() else {
             continue;
         };
+        let mut snapshot_ready = snapshot_ready.clone();
+        snapshot_ready.gated_entities = gated_entities;
         debug!(
             ?client_link_entity,
             snapshot_server_tick = ?snapshot_ready.server_tick,
             snapshot_replicon_tick = ?snapshot_ready.replicon_tick,
             "sending CatchUpSnapshotReady"
         );
-        sender.trigger::<MetadataChannel>(snapshot_ready.clone());
+        sender.trigger::<MetadataChannel>(snapshot_ready);
         commands
             .entity(client_link_entity)
             .remove::<ServerCatchUpMetadata>();

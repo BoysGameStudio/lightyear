@@ -42,6 +42,12 @@ pub struct CatchUpSnapshotReady {
     ///
     /// [`replicon_tick`]: Self::replicon_tick
     pub server_tick: Tick,
+    /// The gated entity manifest: how many `CatchUpGated` entities the
+    /// server holds at send time. A client completing without a rollback
+    /// (the `not_required` fast path) defers completion until this many
+    /// gated entities have arrived locally, so game rules can never
+    /// enable against a partially-delivered world.
+    pub gated_entities: u32,
 }
 
 impl CatchUpSnapshotReady {
@@ -52,6 +58,8 @@ impl CatchUpSnapshotReady {
         Self {
             replicon_tick: RepliconTick::new(u32::MAX),
             server_tick: Tick(u32::MAX),
+            // Stamped with the real count at emit time.
+            gated_entities: 0,
         }
     }
 
