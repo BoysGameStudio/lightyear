@@ -100,12 +100,18 @@ pub(crate) fn update_prediction_history<T: Component + Clone>(
 ) {
     // tick for which we will record the history (either the current client tick or the current rollback tick)
     let tick = timeline.tick();
+    // Prune one tick deeper than the rollback floor: a rollback to `r`
+    // re-stamps the restore value AT `r`, so the newest rollback-final
+    // tick is `current - max_rollback - 1` — and the deterministic
+    // checksum reports exactly that tick (final-only reporting). Keeping
+    // it buffered makes that report resolvable; the memory bound is
+    // unchanged up to one entry.
     let oldest_rollback_tick = tick
-        - u32::from(
+        - (u32::from(
             manager
                 .rollback_policy
                 .effective_max_rollback_ticks(&input_config),
-        );
+        ) + 1);
 
     // Update history if the predicted component changed, then prune it.
     for (entity, component, mut history) in query.iter_mut() {
