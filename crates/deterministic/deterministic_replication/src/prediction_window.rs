@@ -30,13 +30,21 @@ impl Plugin for PredictionWindowWaitPlugin {
 /// input type. A missing stream anchors the controller to the session's first observed tick until
 /// input arrives. An application with no remote input streams does not wait.
 fn update_prediction_window_wait(
-    timeline: SyncedLocalTimeline,
+    timeline: Option<SyncedLocalTimeline>,
     metadata: Res<NetworkingMetadata>,
-    input_config: Res<InputTimelineConfig>,
+    input_config: Option<Res<InputTimelineConfig>>,
     prediction_manager: Option<Res<PredictionManager>>,
     last_confirmed_input: Res<LastConfirmedInput>,
     mut wait: ResMut<PredictionWindowWait>,
 ) {
+    // A dedicated server has neither `LocalTimelineSync` nor
+    // `InputTimelineConfig` (the plugin that inserts them is client-only):
+    // without `Option`s here the parameter validation panics the whole
+    // schedule. The controller is a client/P2P concept, so missing
+    // client-side timeline state simply means "nothing to control".
+    let (Some(timeline), Some(input_config)) = (timeline, input_config) else {
+        return;
+    };
     if metadata.is_changed() {
         wait.reset();
     }
