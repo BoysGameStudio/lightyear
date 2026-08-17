@@ -66,6 +66,20 @@ pub struct CatchUpManager {
     pub(crate) requests_sent: u8,
     pub(crate) request_sent_at_tick: Option<Tick>,
     pub(crate) suppress_checksums: bool,
+    /// `CatchUpGated` additions observed before completion. Compared
+    /// against `arrivals_at_activation` when the activation replay
+    /// finishes: a changed count means the gated entity set moved during
+    /// the catch-up window, so the replay must re-roll with the settled
+    /// set instead of completing (committed-divergence fix).
+    pub(crate) gated_arrivals: u64,
+    /// A `not_required` completion waiting for the gated-entity manifest
+    /// (the event fires and the catch-up completes only once this many
+    /// gated entities exist locally — game rules must never enable
+    /// against a partially-delivered world).
+    pub(crate) pending_not_required: Option<CatchUpSnapshotReady>,
+    /// `gated_arrivals` snapshot taken when the forced rollback was
+    /// triggered.
+    pub(crate) arrivals_at_activation: u64,
     /// Checksum reports are only meaningful for state ticks whose history
     /// this client wrote with its own live simulation. Everything earlier
     /// is either seeded (pre-snapshot ticks resolve to snapshot values by
@@ -119,6 +133,9 @@ pub(crate) fn build(app: &mut App) {
         (
             send_catchup_request.in_set(CatchUpSystems::SendCatchUpRequest),
             trigger_snapshot_rollback.in_set(CatchUpSystems::TriggerCatchUpRollback),
+            complete_not_required
+                .run_if(complete_not_required_when_manifest_arrived)
+                .after(ReplicationSystems::Receive),
         ),
     );
     app.add_systems(
@@ -133,6 +150,36 @@ pub(crate) fn build(app: &mut App) {
             .chain()
             .in_set(CatchUpSystems::ActivateCatchUp),
     );
+}
+
+/// Complete a `not_required` catch-up once the gated-entity manifest has
+/// fully arrived locally. The server marks a client caught-up at connect
+/// when no catch-up is needed; the world's gated entities still replicate
+/// in whatever fragmentation the network gives us, and enabling game
+/// rules on the first arriving entity let the sim commit one-shot
+/// results against a partial world (committed divergence — the
+/// multisession-gate hunt, 2026-08-17).
+pub(crate) fn complete_not_required_when_manifest_arrived(
+    client: Single<&CatchUpManager, With<Client>>,
+    gated: Query<Entity, With<CatchUpGated>>,
+) -> bool {
+    let Some(pending) = &client.pending_not_required else {
+        return false;
+    };
+    gated.iter().count() as u32 >= pending.gated_entities
+}
+
+pub(crate) fn complete_not_required(
+    mut manager: Single<&mut CatchUpManager, With<Client>>,
+    gated: Query<Entity, With<CatchUpGated>>,
+    timeline: Res<LocalTimeline>,
+    mut commands: Commands,
+) {
+    let Some(event) = manager.pending_not_required.clone() else {
+        return;
+    };
+    commands.trigger(event);
+    complete_catch_up(&mut manager, &gated, &mut commands, &timeline);
 }
 
 fn initial_catchup_is_active(
@@ -219,7 +266,6 @@ fn receive_catch_up_snapshot_ready(
     mut manager: Single<&mut CatchUpManager, With<Client>>,
     gated: Query<Entity, With<CatchUpGated>>,
     timeline: Res<LocalTimeline>,
-    mut commands: Commands,
 ) {
     if manager.completed {
         return;
@@ -231,9 +277,11 @@ fn receive_catch_up_snapshot_ready(
         "received replicated CatchUpSnapshotReady"
     );
     if event.is_not_required() {
-        debug!("server reported catch-up is not required");
-        commands.trigger(event.clone());
-        complete_catch_up(&mut manager, &gated, &mut commands, &timeline);
+        debug!(
+            gated_entities = event.gated_entities,
+            "server reported catch-up is not required"
+        );
+        manager.pending_not_required = Some(event.clone());
         return;
     }
     if manager
@@ -258,11 +306,13 @@ fn on_receive_catchup_gated(
 ) {
     if !manager.completed {
         manager.suppress_checksums = true;
+        manager.gated_arrivals += 1;
     } else {
         let tick = timeline.tick();
         commands.trigger(CatchUpSnapshotReady {
             replicon_tick: RepliconTick::new(tick.0),
             server_tick: tick,
+            gated_entities: 0,
         });
         commands.entity(add.entity).remove::<CatchUpGated>();
     }
@@ -332,6 +382,7 @@ pub(crate) fn trigger_snapshot_rollback(
     state_metadata.request_forced_rollback(snapshot_server_tick);
     state_metadata.clear_mismatch_history();
     manager.pending_snapshot = None;
+    manager.arrivals_at_activation = manager.gated_arrivals;
     manager.activating_snapshot = Some(snapshot);
     info!("Triggering catchup rollback since snapshot tick: {snapshot_server_tick:?}");
 }
@@ -355,6 +406,7 @@ fn trigger_catch_up_snapshot_activation(
     commands.trigger(CatchUpSnapshotReady {
         replicon_tick: snapshot.replicon_tick,
         server_tick: snapshot.server_tick,
+        gated_entities: 0,
     });
 }
 
@@ -366,6 +418,19 @@ fn finish_catch_up_snapshot_activation(
     mut commands: Commands,
 ) {
     if manager.completed || manager.activating_snapshot.is_none() {
+        return;
+    }
+    if manager.gated_arrivals != manager.arrivals_at_activation {
+        // The gated entity set moved during the catch-up window (a
+        // mid-window spawn, e.g. a player joining while this client's
+        // snapshot was in flight). Completing now would commit a replay
+        // run against a partial set — re-roll from the same snapshot:
+        // the rollback and the ready-event activation observers re-run
+        // with the settled set. Terminates because the set is finite; a
+        // pathologically late snapshot still hits the too-old
+        // disconnect in `trigger_snapshot_rollback`.
+        let snapshot = manager.activating_snapshot.take().unwrap();
+        manager.pending_snapshot = Some(snapshot);
         return;
     }
 
@@ -394,6 +459,7 @@ fn complete_catch_up(
         manager.report_floor = Some(floor);
     }
     manager.pending_snapshot = None;
+    manager.pending_not_required = None;
     manager.requests_sent = 0;
     manager.request_sent_at_tick = None;
     manager.activating_snapshot = None;
