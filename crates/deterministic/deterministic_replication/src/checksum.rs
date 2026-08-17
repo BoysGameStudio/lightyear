@@ -222,13 +222,16 @@ impl ChecksumSendPlugin {
     ) {
         let current_tick = local_timeline.tick();
         if !last_confirmed_input.received_for_all_clients {
+            trace!(?current_tick, "checksum skip: not received_for_all_clients");
             return;
         }
         let Some(confirmed_tick) = last_confirmed_input.get() else {
+            trace!(?current_tick, "checksum skip: no confirmed tick");
             return;
         };
         // only compute the checksum when we have received remote inputs
         if confirmed_tick > current_tick {
+            trace!(?current_tick, ?confirmed_tick, "checksum skip: confirmed tick in the future");
             return;
         }
         // The newest tick no future rollback can still rewrite. Guard the
@@ -241,10 +244,12 @@ impl ChecksumSendPlugin {
                 .effective_max_rollback_ticks(&input_config),
         ) + 1;
         if current_tick.0 < settle_ticks {
+            trace!(?current_tick, settle_ticks, "checksum skip: session younger than the settle window");
             return;
         }
         let tick = current_tick - settle_ticks;
         if tick > confirmed_tick {
+            trace!(?current_tick, ?tick, ?confirmed_tick, "checksum skip: settled tick unconfirmed");
             return;
         }
         let conventional_link = match metadata.mode {
@@ -268,12 +273,14 @@ impl ChecksumSendPlugin {
         if catchup_manager
             .is_some_and(|manager| manager.report_floor.is_some_and(|floor| tick < floor))
         {
+            trace!(?current_tick, ?tick, "checksum skip: below report floor");
             return;
         }
         #[cfg(feature = "replication")]
         // Skip while catch-up is running. The client is intentionally hashing
         // pre-catch-up state until the bundled snapshot has been replayed.
         if catchup_manager.is_some_and(CatchUpManager::suppresses_checksums) {
+            trace!(?current_tick, ?tick, "checksum skip: suppressed by catch-up");
             return;
         }
         // Skip if a one-shot forced rollback is scheduled but not yet
