@@ -347,8 +347,11 @@ impl ChecksumSendPlugin {
 #[cfg(feature = "client")]
 fn compute_history_checksum(world: &mut ChecksumWorld<'_, '_, true>, tick: Tick) -> u64 {
     let mut checksum = 0u64;
+    let mut archetype_count = 0usize;
+    let mut hashed_components = 0usize;
     // SAFETY: world.update_archetypes() has been called
     unsafe { world.iter_archetypes() }.for_each(|(archetype, checksum_archetype)| {
+        archetype_count += 1;
         // TODO: guarantee stable entity iteration order across peers.
         archetype.entities().iter().for_each(|entity| {
             checksum_archetype
@@ -383,12 +386,20 @@ fn compute_history_checksum(world: &mut ChecksumWorld<'_, '_, true>, tick: Tick)
                         &mut hasher,
                         hash_fn.inner,
                     ) {
+                        hashed_components += 1;
                         // XOR the hashes together to get an order-independent checksum
                         checksum ^= hasher.finish();
                     }
                 });
         });
     });
+    trace!(
+        ?tick,
+        archetype_count,
+        hashed_components,
+        hash_fns = world.state.hash_fns.len(),
+        "client checksum composition"
+    );
     checksum
 }
 
