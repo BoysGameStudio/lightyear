@@ -205,14 +205,7 @@ fn mark_client_caught_up_if_no_gated_on_connect(
     let needs_catchup = if has_revealed_catchup_state {
         has_any_gated
     } else {
-        // Any existing non-prespawn gated entity set (the session world)
-        // requires the full catch-up flow for EVERY client — including
-        // simultaneous first clients. A carve-out on
-        // `no_caught_up_clients` lets them skip against a world that then
-        // replicates piecemeal: rules enable on the first arriving gated
-        // entity and one-shot sim results commit on a partial entity set
-        // (committed divergence; the multisession-gate hunt, 2026-08-17).
-        has_non_prespawn_gated
+        !no_caught_up_clients && has_non_prespawn_gated
     };
     if needs_catchup {
         return;
