@@ -192,17 +192,21 @@ impl ChecksumSendPlugin {
     /// Compute and send the checksum for the newest rollback-settled tick.
     ///
     /// Reports are FINAL-ONLY: the reported tick is
-    /// `current_tick - max_rollback_ticks - 1`. Past that rollback horizon
-    /// no input correction can rewrite the tick's prediction history, so
-    /// every report is final and every logged mismatch is a real committed
-    /// divergence. Reporting `LastConfirmedInput.tick` directly (as
-    /// before) sends hashes that a repairing rollback can still
-    /// invalidate — the stale report reads as a mismatch even though both
-    /// peers' states agree, scattering comparison noise across the run.
-    /// The tick must also be confirmed (`<= LastConfirmedInput.tick`):
-    /// hashing an unconfirmed tick would report prediction garbage.
-    /// `PredictionHistory` resolves at-or-before, so the older read is
-    /// exact.
+    /// `current_tick - max_rollback_ticks`. A rollback may target a tick
+    /// `r >= current - max_rollback_ticks` and rewrites history strictly
+    /// after `r`, so `current - max_rollback_ticks` is the newest tick no
+    /// rollback can ever rewrite — every report is final and every logged
+    /// mismatch is a real committed divergence. Reporting
+    /// `LastConfirmedInput.tick` directly (as before) sends hashes that a
+    /// repairing rollback can still invalidate — the stale report reads as
+    /// a mismatch even though both peers' states agree, scattering
+    /// comparison noise across the run. The tick must also be confirmed
+    /// (`<= LastConfirmedInput.tick`): hashing an unconfirmed tick would
+    /// report prediction garbage. `PredictionHistory` resolves
+    /// at-or-before, so the older read is exact. (0.29 note: history is
+    /// pruned at `current - max_rollback_ticks` — #1626 — so this is also
+    /// the OLDEST reportable tick; the pre-0.29 `- 1` formula can never
+    /// resolve.)
     ///
     /// This runs in `PostUpdate`, after both this frame's rollback replay and
     /// [`InputSystems::UpdateRemoteInputTicks`], so the current [`LastConfirmedInput`] can be read
@@ -234,15 +238,15 @@ impl ChecksumSendPlugin {
             trace!(?current_tick, ?confirmed_tick, "checksum skip: confirmed tick in the future");
             return;
         }
-        // The newest tick no future rollback can still rewrite. Guard the
-        // subtraction explicitly: Tick arithmetic saturates, and a
-        // saturating read would spuriously report tick 0 early in the
-        // session.
+        // The newest tick no future rollback can still rewrite (see the doc
+        // above). Guard the subtraction explicitly: Tick arithmetic
+        // saturates, and a saturating read would spuriously report tick 0
+        // early in the session.
         let settle_ticks = u32::from(
             prediction_manager
                 .rollback_policy
                 .effective_max_rollback_ticks(&input_config),
-        ) + 1;
+        );
         if current_tick.0 < settle_ticks {
             trace!(?current_tick, settle_ticks, "checksum skip: session younger than the settle window");
             return;
