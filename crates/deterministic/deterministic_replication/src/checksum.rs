@@ -301,8 +301,14 @@ impl ChecksumSendPlugin {
                 tick,
                 checksum
             );
-            if let Ok(mut sender) = senders.get_mut(link) {
-                sender.send::<InputChannel>(ChecksumMessage { tick, checksum });
+            match senders.get_mut(link) {
+                Ok(mut sender) => {
+                    sender.send::<InputChannel>(ChecksumMessage { tick, checksum });
+                    trace!(?tick, ?link, "checksum sent to server");
+                }
+                Err(_) => {
+                    trace!(?tick, ?link, "checksum NOT sent: no MessageSender on the client link");
+                }
             }
             return;
         }
