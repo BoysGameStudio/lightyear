@@ -229,7 +229,16 @@ pub(crate) fn send_catchup_request(
     if !last_confirmed_input.received_for_all_clients {
         return;
     }
-    let Some(input_safe_tick) = last_confirmed_input.get() else {
+    // Vacuous coverage: with no remote input buffers (a lone client, e.g.
+    // a reconnect into an emptied session) `LastConfirmedInput` is
+    // trivially satisfied but carries no tick — the synced local timeline
+    // is the safe tick.
+    let Some(input_safe_tick) = last_confirmed_input
+        .get()
+        .or(last_confirmed_input
+            .received_for_all_clients
+            .then_some(local_tick))
+    else {
         return;
     };
     if awaiting.is_empty()
@@ -432,6 +441,11 @@ fn finish_catch_up_snapshot_activation(
         return;
     }
     if manager.gated_arrivals != manager.arrivals_at_activation {
+        debug!(
+            gated_arrivals = manager.gated_arrivals,
+            arrivals_at_activation = manager.arrivals_at_activation,
+            "catch-up re-roll: gated set moved during the activation window"
+        );
         // The gated entity set moved during the catch-up window (a
         // mid-window spawn, e.g. a player joining while this client's
         // snapshot was in flight). Completing now would commit a replay
