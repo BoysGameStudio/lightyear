@@ -57,6 +57,17 @@ pub struct ChecksumHistory {
     history: BTreeMap<Tick, u64>,
 }
 
+/// The newest tick this peer has already reported. Reports are claims about
+/// a state tick; claiming the same tick twice is only ever wrong: a backward
+/// [`lightyear_core::timeline::LocalTimelineShift`] re-ticks every prediction
+/// history by the shift delta, so a tick that was already reported gets
+/// re-armed by the settled-tick formula with relabeled (wrong-sim-tick)
+/// content. Suppressing re-reports keeps every report final even when the
+/// timeline moves backward; coverage simply pauses for the shift window.
+#[cfg(feature = "client")]
+#[derive(Resource, Debug, Default)]
+struct LastChecksumReport(Option<Tick>);
+
 const CHECKSUM_HISTORY_TICKS: u32 = 192;
 
 /// Local and remote P2P checksums waiting for their matching sample.
@@ -222,8 +233,14 @@ impl ChecksumSendPlugin {
         #[cfg(feature = "p2p")] mut pending_checksums: ResMut<PendingP2PChecksums>,
         #[cfg(feature = "replication")] catchup_managers: Query<&CatchUpManager, With<Client>>,
         state_metadata: Res<StateRollbackMetadata>,
+        mut last_report: ResMut<LastChecksumReport>,
     ) {
         let current_tick = local_timeline.tick();
+        // A new session's timeline restarts far below any previous session's
+        // last report; re-arm the guard instead of suppressing forever.
+        if last_report.0.is_some_and(|last| current_tick < last) {
+            last_report.0 = None;
+        }
         if !last_confirmed_input.received_for_all_clients {
             trace!(?current_tick, "checksum skip: not received_for_all_clients");
             return;
@@ -258,6 +275,10 @@ impl ChecksumSendPlugin {
         let tick = current_tick - settle_ticks;
         if tick > confirmed_tick {
             trace!(?current_tick, ?tick, ?confirmed_tick, "checksum skip: settled tick unconfirmed");
+            return;
+        }
+        // Never report the same tick twice (see `LastChecksumReport`).
+        if last_report.0.is_some_and(|last| tick <= last) {
             return;
         }
         let conventional_link = match metadata.mode {
@@ -312,6 +333,7 @@ impl ChecksumSendPlugin {
             match senders.get_mut(link) {
                 Ok(mut sender) => {
                     sender.send::<InputChannel>(ChecksumMessage { tick, checksum });
+                    last_report.0 = Some(tick);
                     trace!(?tick, ?link, "checksum sent to server");
                 }
                 Err(_) => {
@@ -330,6 +352,7 @@ impl ChecksumSendPlugin {
             pending_checksums.record_local(tick, checksum, log_p2p_comparison);
             pending_checksums.clean(tick);
             Self::send_p2p_checksum(&mut senders, connected, tick, checksum);
+            last_report.0 = Some(tick);
         }
     }
 
@@ -432,6 +455,7 @@ impl Plugin for ChecksumSendPlugin {
 
         // We need the application-wide remote-input frontier to compute checksums.
         app.init_resource::<LastConfirmedInput>();
+        app.init_resource::<LastChecksumReport>();
         #[cfg(feature = "p2p")]
         app.init_resource::<PendingP2PChecksums>();
 
