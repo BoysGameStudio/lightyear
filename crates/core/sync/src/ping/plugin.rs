@@ -183,6 +183,13 @@ impl Plugin for PingPlugin {
 
         #[cfg(feature = "server")]
         app.register_required_components::<lightyear_connection::prelude::server::ClientOf, PingManager>();
+        // The pre-0.29 `SyncedTimelinePlugin` registered this for the synced
+        // client timeline; the timeline refactor dropped it without a
+        // replacement, so a dedicated client never received pings, never
+        // answered them, and never synced (upstream's own tests insert
+        // PingManager manually in the stepper, which hid the regression).
+        #[cfg(feature = "client")]
+        app.register_required_components::<lightyear_connection::client::Client, PingManager>();
 
         app.configure_sets(
             PreUpdate,
