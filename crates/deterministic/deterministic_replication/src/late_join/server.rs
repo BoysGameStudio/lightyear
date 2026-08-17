@@ -403,6 +403,9 @@ fn accept_buffered_catch_up_requests(
         );
         metadata.snapshot_ready = Some(CatchUpSnapshotReady {
             server_tick,
+            // Overwritten at emit time with the tick of the send pass
+            // that actually carries the reveal (see
+            // emit_catch_up_snapshot_ready).
             replicon_tick,
             // Stamped with the real count at emit time.
             gated_entities: 0,
@@ -424,16 +427,25 @@ fn emit_catch_up_snapshot_ready(
         &mut EventSender<CatchUpSnapshotReady>,
     )>,
     gated: Query<(), With<CatchUpGated>>,
+    server_tick: Res<ServerTick>,
     mut commands: Commands,
 ) {
     // The gated manifest at send time: how many entities the client must
     // see before a no-rollback completion may enable game rules.
     let gated_entities = gated.iter().count() as u32;
+    // The checkpoint tick must be THIS send pass's tick: the acceptance
+    // (HasCaughtUp) landed before this pass's send set, so this pass is
+    // the one that actually carries the reveal. Stamping at accept time
+    // records the PREVIOUS pass — the client's delivery wait then
+    // completes before the reveal arrives and its replay runs on
+    // spawn-default gated state (committed divergence on late join).
+    let replicon_tick = RepliconTick::new(server_tick.get());
     for (client_link_entity, metadata, mut sender) in query.iter_mut() {
         let Some(snapshot_ready) = metadata.snapshot_ready.as_ref() else {
             continue;
         };
         let mut snapshot_ready = snapshot_ready.clone();
+        snapshot_ready.replicon_tick = replicon_tick;
         snapshot_ready.gated_entities = gated_entities;
         debug!(
             ?client_link_entity,
