@@ -132,12 +132,26 @@ unsafe impl<const HISTORY: bool> SystemParam for ChecksumWorld<'_, '_, HISTORY> 
                 })
                 .collect()
         };
+        let confirmed_fallback_fns = if HISTORY {
+            let prediction_registry = world.resource::<PredictionRegistry>();
+            prediction_registry
+                .prediction_map
+                .iter()
+                .filter_map(|(_, pred)| {
+                    pred.confirmed_at_or_before_and_hash
+                        .map(|f| (pred.prediction_history_id, (pred.confirmed_history_id, f)))
+                })
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
         trace!("HashFns used for ChecksumState: {:?}", hash_fns);
         ChecksumState {
             marker_id,
             disable_rollback_id,
             archetypes: Default::default(),
             hash_fns,
+            confirmed_fallback_fns,
             archetype_generation: ArchetypeGeneration::initial(),
         }
     }
@@ -177,6 +191,13 @@ unsafe impl<const HISTORY: bool> SystemParam for ChecksumWorld<'_, '_, HISTORY> 
                 );
             }
         });
+        // The confirmed-history fallback reads those components the same way.
+        state
+            .confirmed_fallback_fns
+            .values()
+            .for_each(|(component_id, _)| {
+                filtered_access.add_write(*component_id);
+            });
         // SAFETY: used only to extend access.
         component_access_set.add(filtered_access);
     }
@@ -203,6 +224,12 @@ pub(crate) struct ChecksumState {
     pub(crate) disable_rollback_id: ComponentId,
     pub(crate) archetypes: Vec<ChecksumArchetype>,
     pub(crate) hash_fns: BTreeMap<ComponentId, (DeterministicFns, Option<PopUntilTickAndHashFn>)>,
+    /// Client-side fallback for components whose prediction history has no
+    /// entry at the hashed tick (a never-changed component writes no
+    /// prediction history, while the server hashes its live value every
+    /// tick): `PredictionHistory<C>` id → (`ConfirmedHistory<C>` id, its
+    /// at-or-before hash fn). Only used when `HISTORY` is true.
+    pub(crate) confirmed_fallback_fns: BTreeMap<ComponentId, (ComponentId, PopUntilTickAndHashFn)>,
     pub(crate) archetype_generation: ArchetypeGeneration,
 }
 

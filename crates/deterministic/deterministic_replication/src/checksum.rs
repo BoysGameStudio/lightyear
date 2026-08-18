@@ -426,6 +426,28 @@ fn compute_history_checksum(world: &mut ChecksumWorld<'_, '_, true>, tick: Tick)
                         );
                         // XOR the hashes together to get an order-independent checksum
                         checksum ^= hasher.finish();
+                    } else if let Some((confirmed_id, confirmed_fn)) =
+                        world.state.confirmed_fallback_fns.get(component_id)
+                    {
+                        // Fallback: a never-changed component writes no
+                        // prediction history, but the server hashes its live
+                        // value every tick. The confirmed (authoritative)
+                        // history holds the delivery value at its tick, so an
+                        // at-or-before read matches the server exactly.
+                        // SAFETY: same construction as above, unique access.
+                        let confirmed_ptr = unsafe {
+                            lightyear_utils::ecs::get_component_unchecked_mut(
+                                world.world,
+                                entity,
+                                archetype.table_id(),
+                                *storage_type,
+                                *confirmed_id,
+                            )
+                        };
+                        if confirmed_fn(confirmed_ptr, tick, &mut hasher, hash_fn.inner) {
+                            hashed_components += 1;
+                            checksum ^= hasher.finish();
+                        }
                     }
                 });
         });

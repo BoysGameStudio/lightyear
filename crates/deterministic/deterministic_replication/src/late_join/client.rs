@@ -8,7 +8,7 @@ use core::time::Duration;
 use lightyear_connection::client::{Client, Disconnect};
 use lightyear_core::prelude::LocalTimeline;
 use lightyear_core::tick::Tick;
-use lightyear_core::timeline::Rollback;
+use lightyear_core::timeline::{LocalTimelineShift, Rollback};
 use lightyear_inputs::client::InputSystems;
 use lightyear_messages::prelude::{MessageSender, RemoteEvent};
 use lightyear_prediction::prelude::{
@@ -111,6 +111,7 @@ pub(crate) fn build(app: &mut App) {
     app.register_required_components::<Client, CatchUpManager>();
     app.add_observer(on_receive_catchup_gated);
     app.add_observer(receive_catch_up_snapshot_ready);
+    app.add_observer(raise_report_floor_on_timeline_shift);
     app.configure_sets(
         PreUpdate,
         (
@@ -190,6 +191,31 @@ fn initial_catchup_is_active(
         return false;
     };
     *mode != CatchUpMode::InputOnly && manager.is_some_and(|manager| !manager.completed)
+}
+
+/// Forward timeline shifts relabel prediction history: pre-shift entries
+/// move forward to cover ticks the client never simulated (approximate by
+/// design), and the skipped window has no history at all. Settled-tick
+/// reports for the affected window would compare stale or empty state
+/// against the server, so raise the report floor past the shift. Backward
+/// shifts are suppressed at the source (the sync layer never snaps the
+/// deterministic timeline backward), and would only re-arm the floor's
+/// own suppress-and-wait behaviour anyway.
+fn raise_report_floor_on_timeline_shift(
+    trigger: On<LocalTimelineShift>,
+    timeline: Res<LocalTimeline>,
+    manager: Option<Single<&mut CatchUpManager, With<Client>>>,
+) {
+    if trigger.delta <= 0 {
+        return;
+    }
+    let Some(mut manager) = manager else {
+        return;
+    };
+    let floor = timeline.tick() + CATCH_UP_REPORT_SETTLE_TICKS as i32;
+    if manager.report_floor.is_none_or(|f| floor > f) {
+        manager.report_floor = Some(floor);
+    }
 }
 
 fn catchup_snapshot_is_activating(manager: Option<Single<&CatchUpManager, With<Client>>>) -> bool {

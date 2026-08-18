@@ -69,6 +69,13 @@ pub struct PredictionMetadata {
     #[cfg(feature = "deterministic")]
     /// Function to hash the value in [`PredictionHistory<C>`] at a given tick.
     pub pop_until_tick_and_hash: Option<PopUntilTickAndHashFn>,
+    #[cfg(feature = "deterministic")]
+    /// Function to hash the authoritative value in [`ConfirmedHistory<C>`]
+    /// resolved at-or-before a given tick; the client checksum's fallback
+    /// when the prediction history has no entry (a never-changed component
+    /// writes no prediction history, while the server hashes its live
+    /// value every tick).
+    pub confirmed_at_or_before_and_hash: Option<PopUntilTickAndHashFn>,
 }
 
 #[cfg(feature = "metrics")]
@@ -165,6 +172,10 @@ impl PredictionMetadata {
             metric_handles: PredictionMetricHandles::default(),
             #[cfg(feature = "deterministic")]
             pop_until_tick_and_hash: Some(PredictionRegistry::pop_until_tick_and_hash::<C>),
+            #[cfg(feature = "deterministic")]
+            confirmed_at_or_before_and_hash: Some(
+                PredictionRegistry::confirmed_at_or_before_and_hash::<C>,
+            ),
         }
     }
 }
@@ -577,6 +588,32 @@ impl PredictionRegistry {
                 tick,
                 v
             );
+            f(v, hasher);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Hash the authoritative value in [`ConfirmedHistory<C>`] resolved
+    /// at-or-before `tick` (see the field doc on
+    /// [`PredictionMetadata::confirmed_at_or_before_and_hash`]). Returns
+    /// false when the confirmed history has no entry either — the entity
+    /// then contributes nothing, matching the server, which only hashes
+    /// entities that actually hold the component.
+    #[cfg(feature = "deterministic")]
+    fn confirmed_at_or_before_and_hash<C: Debug + Clone + 'static>(
+        ptr: PtrMut,
+        tick: Tick,
+        hasher: &mut seahash::SeaHasher,
+        f: fn(),
+    ) -> bool {
+        use lightyear_core::history_buffer::HistoryState;
+        // SAFETY: the caller must ensure that the function has the correct type
+        let f = unsafe { core::mem::transmute::<fn(), fn(&C, &mut seahash::SeaHasher)>(f) };
+        // SAFETY: the caller must ensure that the pointer is valid and points to a ConfirmedHistory<C>
+        let history = unsafe { ptr.deref_mut::<ConfirmedHistory<C>>() };
+        if let Some(HistoryState::Updated(v)) = history.get_state_at_or_before(tick) {
             f(v, hasher);
             true
         } else {
