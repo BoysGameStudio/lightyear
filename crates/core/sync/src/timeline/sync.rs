@@ -447,7 +447,33 @@ impl<Remote: SyncTargetTimeline> LocalTimelineSyncPlugin<Remote> {
                 jitter_ms = ping_manager.jitter().as_secs_f64() * 1000.0,
                 "local timeline sync emitted LocalTimelineShift"
             );
-            commands.trigger(LocalTimelineShift { delta: tick_delta });
+            if tick_delta < 0 {
+                // Never snap the deterministic timeline BACKWARD. A backward
+                // shift re-ticks every prediction history by the delta, so
+                // settled ticks already inside the checksum window get
+                // re-armed with relabeled (wrong-sim-tick) content — the
+                // first report matches, the relabeled one mismatches on
+                // state every peer agrees on (Tenacity 0.29 migration hunt).
+                // A client ahead of the objective already delivered the
+                // inputs the server needs, so pausing the local clock until
+                // the objective catches up is safe and self-heals — the
+                // same primitive as the deterministic prediction-window
+                // wait. Forward snaps stay: the settled window only jumps
+                // ahead, never re-arms.
+                trace!(
+                    target: "lightyear_debug::sync",
+                    kind = "backward_resync_suppressed",
+                    schedule = "PostUpdate",
+                    sample_point = "PostUpdate",
+                    ?source,
+                    local_tick = local_now.tick().0,
+                    tick_delta,
+                    "suppressed backward timeline resync; pausing the local clock instead"
+                );
+                sync.set_relative_speed(0.0);
+            } else {
+                commands.trigger(LocalTimelineShift { delta: tick_delta });
+            }
         } else {
             trace!(
                 target: "lightyear_debug::sync",
