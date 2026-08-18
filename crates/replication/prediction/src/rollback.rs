@@ -946,9 +946,18 @@ pub(crate) fn prepare_rollback<C: Component<Mutability = Mutable> + Clone>(
             predicted_history.add_state(rollback_tick, state);
         } else if let Some(current) = predicted_component.as_deref() {
             // No state exists at rollback_tick (e.g. the entity was revealed to
-            // this client after the rollback target). The replay starts from the
-            // current component value, so seed the history with it.
-            predicted_history.add_state(rollback_tick, HistoryState::Updated(current.clone()));
+            // this client after the rollback target). Prefer the authoritative
+            // confirmed history for the seed: the live component may carry
+            // presentation dust (frame interpolation rewrites the live value
+            // between ticks for visual smoothing, e.g. 1-ULP interpolation
+            // rounding), which must never enter rollback history — a seeded
+            // dust value persists forever for a never-changed component and
+            // poisons every later checksum read.
+            let seed = confirmed_history
+                .as_ref()
+                .and_then(|history| history.get_state_at_or_before(rollback_tick).cloned())
+                .unwrap_or_else(|| HistoryState::Updated(current.clone()));
+            predicted_history.add_state(rollback_tick, seed);
         }
         trace!(
             target: "lightyear_debug::prediction",
