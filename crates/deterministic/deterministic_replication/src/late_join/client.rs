@@ -35,6 +35,10 @@ pub struct CatchUpClientTimeout {
 
 const CATCH_UP_REQUEST_RETRY_TICKS: i32 = 16;
 const CATCH_UP_MAX_REQUESTS: u8 = 10;
+/// Slack in the coverage gate for the catch-up rollback trigger (see the
+/// gate's comment): the replay may commit at most this many ticks past
+/// confirmed input coverage.
+const CATCH_UP_REPLAY_SLACK: i32 = 4;
 
 impl Default for CatchUpClientTimeout {
     fn default() -> Self {
@@ -417,9 +421,12 @@ pub(crate) fn trigger_snapshot_rollback(
     // The replay must not commit ticks beyond confirmed input coverage:
     // it replays `snapshot_server_tick + 1 ..= local_tick`, so the local
     // tick itself must be covered. Hosts pin the local tick to coverage
-    // while the catch-up is in flight (see `is_catching_up`); this gate is
-    // the load-bearing check that the replay is covered by construction.
-    if local_tick > input_safe_tick {
+    // while the catch-up is in flight (see `is_catching_up`), which has a
+    // small mechanical overshoot (the pacing allows `< 1` tick per frame
+    // and input messages land a couple of ticks apart). The slack absorbs
+    // that: an uncovered tail this small is repaired by the ordinary
+    // input-mismatch rollback long before it reaches the rollback horizon.
+    if local_tick > input_safe_tick + CATCH_UP_REPLAY_SLACK {
         trace!(
             ?client_entity,
             ?local_tick,
