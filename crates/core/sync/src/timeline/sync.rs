@@ -428,28 +428,29 @@ impl<Remote: SyncTargetTimeline> LocalTimelineSyncPlugin<Remote> {
             return;
         }
         let remote_estimate = remote.current_estimate();
+        let was_synced = sync.is_synced();
         let before_speed = sync.relative_speed();
         if let Some(tick_delta) =
             sync.sync(local_now, remote, config, ping_manager, tick_duration.0)
         {
-            trace!(
-                target: "lightyear_debug::sync",
-                kind = "sync_adjustment",
-                schedule = "PostUpdate",
-                sample_point = "PostUpdate",
-                ?source,
-                timeline = "LocalTimeline",
-                remote_timeline = ?DebugName::type_name::<Remote>(),
-                local_tick = local_now.tick().0,
-                remote_tick = remote.tick().0,
-                remote_estimate = ?remote_estimate,
-                tick_delta,
-                relative_speed = sync.relative_speed(),
-                rtt_ms = ping_manager.rtt().as_secs_f64() * 1000.0,
-                jitter_ms = ping_manager.jitter().as_secs_f64() * 1000.0,
-                "local timeline sync emitted LocalTimelineShift"
-            );
             if tick_delta < 0 {
+                trace!(
+                    target: "lightyear_debug::sync",
+                    kind = "sync_adjustment",
+                    schedule = "PostUpdate",
+                    sample_point = "PostUpdate",
+                    ?source,
+                    timeline = "LocalTimeline",
+                    remote_timeline = ?DebugName::type_name::<Remote>(),
+                    local_tick = local_now.tick().0,
+                    remote_tick = remote.tick().0,
+                    remote_estimate = ?remote_estimate,
+                    tick_delta,
+                    relative_speed = sync.relative_speed(),
+                    rtt_ms = ping_manager.rtt().as_secs_f64() * 1000.0,
+                    jitter_ms = ping_manager.jitter().as_secs_f64() * 1000.0,
+                    "local timeline sync emitted LocalTimelineShift"
+                );
                 // Never snap the deterministic timeline BACKWARD. A backward
                 // shift re-ticks every prediction history by the delta, so
                 // settled ticks already inside the checksum window get
@@ -460,8 +461,7 @@ impl<Remote: SyncTargetTimeline> LocalTimelineSyncPlugin<Remote> {
                 // inputs the server needs, so pausing the local clock until
                 // the objective catches up is safe and self-heals — the
                 // same primitive as the deterministic prediction-window
-                // wait. Forward snaps stay: the settled window only jumps
-                // ahead, never re-arms.
+                // wait.
                 trace!(
                     target: "lightyear_debug::sync",
                     kind = "backward_resync_suppressed",
@@ -473,7 +473,60 @@ impl<Remote: SyncTargetTimeline> LocalTimelineSyncPlugin<Remote> {
                     "suppressed backward timeline resync; pausing the local clock instead"
                 );
                 sync.set_relative_speed(0.0);
+            } else if was_synced {
+                // Never snap the deterministic timeline FORWARD mid-session
+                // either. A forward shift relabels the outgoing input buffer
+                // by the delta (`shift_input_buffer_ticks`), so the skipped
+                // ticks are never produced under any label — and input
+                // messages carry only the newest tick (no redundancy window),
+                // so the server never receives exact inputs for the skipped
+                // window. The sim-mode server paces the sim on exact-input
+                // coverage, so a hole spanning a required tick (a late
+                // joiner's activation tick, when catch-up pacing held its
+                // timeline >10 ticks behind the objective) stalls the whole
+                // fleet permanently (Tenacity multisession hunt, 2026-08).
+                // Falling behind is safe instead: the server waits on
+                // coverage while the client slews back at the controller's
+                // fastest pacing speed and the input stream stays contiguous.
+                // The INITIAL synchronization snap (`!was_synced`) stays:
+                // catch-up rebuilds the world and the stream starts fresh.
+                let max_catchup = 1.0 + (config.sync.speedup_factor - 1.0) * 2.0;
+                sync.set_relative_speed(max_catchup);
+                trace!(
+                    target: "lightyear_debug::sync",
+                    kind = "forward_resync_suppressed",
+                    schedule = "PostUpdate",
+                    sample_point = "PostUpdate",
+                    ?source,
+                    timeline = "LocalTimeline",
+                    remote_timeline = ?DebugName::type_name::<Remote>(),
+                    local_tick = local_now.tick().0,
+                    remote_tick = remote.tick().0,
+                    remote_estimate = ?remote_estimate,
+                    tick_delta,
+                    max_catchup,
+                    rtt_ms = ping_manager.rtt().as_secs_f64() * 1000.0,
+                    jitter_ms = ping_manager.jitter().as_secs_f64() * 1000.0,
+                    "suppressed forward timeline resync; slewing at maximum catch-up speed"
+                );
             } else {
+                trace!(
+                    target: "lightyear_debug::sync",
+                    kind = "sync_adjustment",
+                    schedule = "PostUpdate",
+                    sample_point = "PostUpdate",
+                    ?source,
+                    timeline = "LocalTimeline",
+                    remote_timeline = ?DebugName::type_name::<Remote>(),
+                    local_tick = local_now.tick().0,
+                    remote_tick = remote.tick().0,
+                    remote_estimate = ?remote_estimate,
+                    tick_delta,
+                    relative_speed = sync.relative_speed(),
+                    rtt_ms = ping_manager.rtt().as_secs_f64() * 1000.0,
+                    jitter_ms = ping_manager.jitter().as_secs_f64() * 1000.0,
+                    "local timeline sync emitted LocalTimelineShift"
+                );
                 commands.trigger(LocalTimelineShift { delta: tick_delta });
             }
         } else {
@@ -1068,6 +1121,78 @@ mod tests {
             app.world().resource::<Time<Virtual>>().relative_speed(),
             1.0,
             "leaving P2P topology must restore normal application time"
+        );
+    }
+
+    /// Mid-session forward resyncs are suppressed (the input-stream hole they
+    /// punch into the server's exact-input coverage is unhealable); the
+    /// initial synchronization snap stays.
+    #[test]
+    fn forward_resync_suppressed_mid_session_but_applied_at_initial_sync() {
+        let mut app = App::new();
+        app.add_plugins((
+            CorePlugins {
+                tick_duration: Duration::from_millis(10),
+            },
+            LocalTimelineSyncPlugin::<TestRemote>::default(),
+        ));
+        app.init_resource::<NetworkingMetadata>();
+        app.insert_resource(InputTimelineConfig::default().with_sync_config(SyncConfig {
+            handshake_pings: 0,
+            ..Default::default()
+        }));
+
+        let local_now = TickInstant::from(app.world().resource::<LocalTimeline>().tick());
+        let estimate = local_now + TickDelta::from_i32(50);
+        let client = app
+            .world_mut()
+            .spawn((
+                Client,
+                Connected,
+                RemoteId(PeerId::Local(1)),
+                TestRemote {
+                    now: estimate,
+                    estimate,
+                    initialized: true,
+                    received_packet: true,
+                },
+                PingManager::default(),
+            ))
+            .id();
+        app.world_mut().resource_mut::<NetworkingMetadata>().mode =
+            NetworkTopology::Client(client);
+
+        // Initial synchronization: the forward snap applies (catch-up
+        // rebuilds the world; the input stream starts fresh).
+        app.world_mut().run_schedule(PostUpdate);
+        let after_initial = app.world().resource::<LocalTimeline>().tick();
+        assert!(
+            after_initial > local_now.tick(),
+            "initial sync must snap the timeline forward"
+        );
+        assert!(app.world().resource::<LocalTimelineSync>().is_synced());
+
+        // Mid-session: an equally large forward error must NOT shift the
+        // timeline — it would relabel the outgoing input buffer and leave an
+        // unhealable exact-input hole on the server. The controller slews at
+        // its fastest pacing speed instead.
+        let before = app.world().resource::<LocalTimeline>().tick();
+        app.world_mut()
+            .entity_mut(client)
+            .get_mut::<TestRemote>()
+            .unwrap()
+            .estimate = TickInstant::from(before) + TickDelta::from_i32(50);
+        app.world_mut().run_schedule(PostUpdate);
+        assert_eq!(
+            app.world().resource::<LocalTimeline>().tick(),
+            before,
+            "mid-session forward resync must not relabel local ticks"
+        );
+        let speed = app.world().resource::<LocalTimelineSync>().relative_speed();
+        let max_catchup = 1.0 + (SyncConfig::default().speedup_factor - 1.0) * 2.0;
+        assert!(
+            (speed - max_catchup).abs() < 1e-6,
+            "suppressed forward resync must slew at the maximum catch-up speed, got {speed}"
         );
     }
 }
