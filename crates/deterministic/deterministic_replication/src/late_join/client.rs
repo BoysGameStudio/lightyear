@@ -19,7 +19,7 @@ use lightyear_prediction::rollback::{CatchUpGated, DisableRollback};
 use lightyear_replication::metadata::MetadataChannel;
 use lightyear_replication::prelude::ReplicationSystems;
 use lightyear_sync::prelude::{InputTimelineConfig, SyncedLocalTimeline};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::{CatchUpRequest, CatchUpSnapshotReady, CatchUpSystems};
 
@@ -420,6 +420,13 @@ pub(crate) fn trigger_snapshot_rollback(
     // while the catch-up is in flight (see `is_catching_up`); this gate is
     // the load-bearing check that the replay is covered by construction.
     if local_tick > input_safe_tick {
+        trace!(
+            ?client_entity,
+            ?local_tick,
+            ?input_safe_tick,
+            ?snapshot_server_tick,
+            "catch-up rollback blocked: local tick ahead of confirmed input coverage"
+        );
         return;
     }
     if !server_mutate_ticks.contains(snapshot_replicon_tick) {
