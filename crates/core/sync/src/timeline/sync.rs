@@ -1,6 +1,6 @@
 use crate::ping::manager::PingManager;
 use crate::plugin::SyncSystems;
-use crate::timeline::input::{InputTimelineConfig, LocalTimelineSync, PredictionWindowWait};
+use crate::timeline::input::{InputTimelineConfig, LocalTimelineSync, PredictionWindowControl, PredictionWindowWait};
 use bevy_app::{App, Last, Plugin, PostUpdate};
 use bevy_ecs::prelude::*;
 use bevy_reflect::Reflect;
@@ -375,14 +375,16 @@ impl<Remote: SyncTargetTimeline> LocalTimelineSyncPlugin<Remote> {
     fn update_virtual_time(
         metadata: Res<NetworkingMetadata>,
         prediction_window_wait: Res<PredictionWindowWait>,
+        control: Option<Res<PredictionWindowControl>>,
         local_timeline: Res<LocalTimeline>,
         sync: Res<LocalTimelineSync>,
         mut virtual_time: ResMut<Time<Virtual>>,
     ) {
         let is_synced = sync.is_synced();
+        let window_enabled = control.is_none_or(|control| control.enabled);
         match metadata.mode {
             NetworkTopology::Client(_) | NetworkTopology::P2P { .. }
-                if is_synced && prediction_window_wait.is_waiting() =>
+                if is_synced && window_enabled && prediction_window_wait.is_waiting() =>
             {
                 virtual_time.set_relative_speed(0.0);
                 trace!(

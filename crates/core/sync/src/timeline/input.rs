@@ -112,6 +112,23 @@ impl InputTimelineConfig {
 /// lets the simulation make useful progress after it resumes.
 pub const PREDICTION_WINDOW_HYSTERESIS_TICKS: u16 = 2;
 
+/// Opt-out for the prediction-window wait. Upstream's wait pauses the whole
+/// fixed pipeline — including local input production — so in a client/server
+/// fleet every peer can end up waiting on every other peer's stream: a
+/// mutual pause no coverage ever breaks (the fleet deadlocks). Hosts that
+/// pace input coverage at the server instead (never-simulate-uncovered)
+/// disable the wait here; the default preserves upstream behavior.
+#[derive(Resource, Debug, Clone, Copy, Reflect)]
+pub struct PredictionWindowControl {
+    pub enabled: bool,
+}
+
+impl Default for PredictionWindowControl {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// Application-global signal that stops deterministic simulation at its safe prediction limit.
 ///
 /// Deterministic replication updates this resource from the minimum confirmed-input frontier
