@@ -104,6 +104,18 @@ impl CatchUpManager {
     pub fn suppresses_checksums(&self) -> bool {
         self.suppress_checksums
     }
+
+    /// True while a state-based catch-up snapshot is in flight or activating:
+    /// the window in which the client's simulation must stay inside
+    /// confirmed input coverage. A catch-up replay that commits ticks beyond
+    /// `LastConfirmedInput` simulates them with fallback inputs; under
+    /// delivery contention the covering inputs land after those ticks age
+    /// past the rollback horizon, so the wrong ticks commit forever. Hosts
+    /// pace `FixedMain` on this signal (the client twin of server input
+    /// pacing).
+    pub fn is_catching_up(&self) -> bool {
+        !self.completed && (self.pending_snapshot.is_some() || self.activating_snapshot.is_some())
+    }
 }
 
 pub(crate) fn build(app: &mut App) {
@@ -400,6 +412,14 @@ pub(crate) fn trigger_snapshot_rollback(
     // The synced local timeline is safe to use as the catch-up coverage tick.
     let input_safe_tick = last_confirmed_input.get().unwrap_or(local_tick);
     if input_safe_tick < snapshot_server_tick {
+        return;
+    }
+    // The replay must not commit ticks beyond confirmed input coverage:
+    // it replays `snapshot_server_tick + 1 ..= local_tick`, so the local
+    // tick itself must be covered. Hosts pin the local tick to coverage
+    // while the catch-up is in flight (see `is_catching_up`); this gate is
+    // the load-bearing check that the replay is covered by construction.
+    if local_tick > input_safe_tick {
         return;
     }
     if !server_mutate_ticks.contains(snapshot_replicon_tick) {
