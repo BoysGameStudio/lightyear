@@ -79,7 +79,9 @@ use lightyear_messages::prelude::MessageSender;
 use lightyear_prediction::prelude::*;
 use lightyear_replication::prelude::{ControlledBy, PreSpawned};
 use lightyear_sync::plugin::SyncSystems;
-use lightyear_sync::prelude::{InputTimelineConfig, LocalTimelineSync, SyncedLocalTimeline};
+use lightyear_sync::prelude::{
+    InputTimelineConfig, LocalTimelineSync, RemoteTimeline, SyncedLocalTimeline,
+};
 use lightyear_transport::prelude::ChannelRegistry;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
@@ -752,6 +754,7 @@ fn prepare_input_message<S: ActionStateSequence>(
     >,
     real_time: Res<Time<Real>>,
     mut send_timer: Local<Option<Timer>>,
+    remote_timeline: Option<Single<&RemoteTimeline, With<lightyear_connection::client::Client>>>,
 ) {
     let Some(route) = InputRoute::from_topology(&metadata.mode) else {
         return;
@@ -811,6 +814,20 @@ fn prepare_input_message<S: ActionStateSequence>(
     .try_into()
     .unwrap();
     num_ticks *= input_config.packet_redundancy as u32;
+    // A deterministic server paces its simulation on exact-input coverage:
+    // any tick missing from every in-flight window is a coverage hole the
+    // server cannot heal once the window slides past (the fleet-freeze
+    // class). Stretch the window to reach the server's estimated tick:
+    // while the server stalls on a hole its timeline stops, so every
+    // subsequent message re-covers the hole until it fills — even if this
+    // client is paused ahead of the stalled server with a static window.
+    if let Some(remote) = remote_timeline {
+        let remote_tick = remote.tick();
+        let gap = tick - remote_tick;
+        if gap > 0 {
+            num_ticks = num_ticks.max(gap as u32 + 2).min(HISTORY_DEPTH);
+        }
+    }
     let mut message = InputMessage::<S>::new(tick);
     for (entity, input_buffer, pre_spawned, controlled_by) in input_buffer_query.iter() {
         if !route.accepts_local_target(controlled_by) {
