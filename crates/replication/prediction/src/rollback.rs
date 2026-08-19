@@ -986,6 +986,9 @@ pub(crate) fn prepare_rollback<C: Component<Mutability = Mutable> + Clone>(
                     ?entity,
                     ?kind,
                     ?rollback_tick,
+                    oldest = ?predicted_history.buffer().front().map(|(t, _)| t),
+                    newest = ?predicted_history.buffer().back().map(|(t, _)| t),
+                    history_len = predicted_history.len(),
                     "No history entry for component at rollback tick; leaving current value in place"
                 );
             }
