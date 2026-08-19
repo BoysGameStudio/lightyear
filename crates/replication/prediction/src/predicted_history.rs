@@ -570,11 +570,13 @@ mod tests {
             .world()
             .get::<PredictionHistory<TestValue>>(entity)
             .unwrap();
-        assert_eq!(history.oldest().unwrap().0, Tick(93));
+        assert_eq!(history.oldest().unwrap().0, Tick(92));
         assert_eq!(
-            history.get(Tick(93)),
+            history.get(Tick(92)),
             Some(&TestValue(90.0)),
-            "balanced input delay should cap the 20-tick policy at 7 ticks"
+            "balanced input delay caps the 20-tick policy at 7; the buffer keeps one tick \
+             deeper than the rollback floor so the final-only checksum report tick \
+             (current - max_rollback - 1) stays resolvable"
         );
     }
 

@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use bevy_ecs::entity::EntityHash;
 use core::ops::{Deref, DerefMut};
 use lightyear_core::prelude::Tick;
+use lightyear_core::timeline::Rollback;
 use lightyear_sync::prelude::InputTimelineConfig;
 use parking_lot::RwLock;
 
@@ -208,6 +209,12 @@ pub struct StateRollbackMetadata {
     /// Set via [`StateRollbackMetadata::request_forced_rollback`]. Cleared
     /// when consumed.
     pub(crate) forced_rollback_tick: Option<Tick>,
+
+    /// Restore kind for [`Self::forced_rollback_tick`]. `None` means
+    /// `Rollback::FromState` (the catch-up default); input-kind requests
+    /// restore from the local predicted history instead.
+    #[reflect(ignore)]
+    pub(crate) forced_rollback_kind: Option<Rollback>,
 }
 
 impl StateRollbackMetadata {
@@ -281,11 +288,39 @@ impl StateRollbackMetadata {
     ///
     /// [`record_mismatch`]: StateRollbackMetadata::record_mismatch
     pub fn request_forced_rollback(&mut self, tick: Tick) {
+        self.request_forced_rollback_with_kind(tick, Rollback::FromState);
+    }
+
+    /// Request a forced rollback that restores from the local PREDICTED
+    /// history (`Rollback::FromInputs`) instead of confirmed history. This
+    /// is the right kind for repairing a late-learned replicated-tick event
+    /// mid-session (e.g. a player activation mutation arriving after its
+    /// tick under packet loss): the client's own predicted history is the
+    /// canonical past there, while the FromState restore path relies on
+    /// confirmed history that only a catch-up blob seeds.
+    pub fn request_forced_input_rollback(&mut self, tick: Tick) {
+        self.request_forced_rollback_with_kind(tick, Rollback::FromInputs);
+    }
+
+    fn request_forced_rollback_with_kind(&mut self, tick: Tick, kind: Rollback) {
         match self.forced_rollback_tick {
-            None => self.forced_rollback_tick = Some(tick),
-            Some(existing) if tick < existing => self.forced_rollback_tick = Some(tick),
+            None => {
+                self.forced_rollback_tick = Some(tick);
+                self.forced_rollback_kind = Some(kind);
+            }
+            Some(existing) if tick < existing => {
+                self.forced_rollback_tick = Some(tick);
+                self.forced_rollback_kind = Some(kind);
+            }
             _ => {}
         }
+    }
+
+    /// Take a pending forced rollback request (tick + restore kind).
+    pub(crate) fn take_forced_rollback(&mut self) -> Option<(Tick, Rollback)> {
+        let tick = self.forced_rollback_tick.take()?;
+        let kind = self.forced_rollback_kind.take().unwrap_or(Rollback::FromState);
+        Some((tick, kind))
     }
 
     /// Tick at which a one-shot rollback has been requested but not yet

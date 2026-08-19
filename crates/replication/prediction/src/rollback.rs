@@ -428,9 +428,10 @@ fn check_rollback(
     // This lets one-shot mechanisms (e.g. late-join catch-up) trigger a
     // rollback even on a client whose normal rollback policy is `Disabled`.
     let mut forced_rollback_requested = false;
-    if let Some(forced_tick) = state_metadata.forced_rollback_tick.take() {
+    if let Some((forced_tick, forced_kind)) = state_metadata.take_forced_rollback() {
         debug!(
             ?forced_tick,
+            ?forced_kind,
             "Forced rollback requested via StateRollbackMetadata::request_forced_rollback"
         );
         trace!(
@@ -446,7 +447,7 @@ fn check_rollback(
             forced_tick,
             &prediction_manager,
             &mut commands,
-            Rollback::FromState,
+            forced_kind,
         );
         forced_rollback_requested = true;
     }
