@@ -1,11 +1,12 @@
 //! Handle input messages received from the clients
 
 use crate::HISTORY_DEPTH;
+use alloc::vec::Vec;
 #[cfg(feature = "prediction")]
 use crate::InputChannel;
 use crate::input_buffer::InputBuffer;
 use crate::input_message::{
-    ActionStateQueryData, ActionStateSequence, InputMessage, InputTarget, StateMut,
+    ActionStateQueryData, ActionStateSequence, InputMessage, InputTarget, PerTargetData, StateMut,
 };
 #[cfg(feature = "metrics")]
 use crate::metric_handles::InputMetricHandles;
@@ -395,65 +396,34 @@ fn receive_input_message<S: ActionStateSequence>(
             }
 
             #[cfg(feature = "prediction")]
-            if config.rebroadcast_inputs && let Ok(server) = server.get(server_entity) {
-                // only rebroadcast if the message is not already a rebroadcast
-                if !message.rebroadcast {
-                    // Resolve PreSpawned targets to server entities before rebroadcasting,
-                    // so that other clients can resolve them via normal entity mapping.
-                    for input in message.inputs.iter_mut() {
-                        if let InputTarget::PreSpawned(hash) = input.target
-                            && let Some(server_e) = prespawned.iter()
-                                .find_map(|(e, p)| p.hash.is_some_and(|h| h == hash).then_some(e))
-                        {
-                            input.target = InputTarget::Entity(server_e);
-                        }
-                    }
-                    debug!(action = ?DebugName::type_name::<S>().shortname(), "Rebroadcast input message {message:?} from client {client_id:?} with rebroadcaster {rebroadcaster:?}");
-                    message.rebroadcast = true;
-                    trace!(
-                        target: "lightyear_debug::input",
-                        kind = "server_input_rebroadcast",
-                        schedule = "PreUpdate",
-                        sample_point = "PreUpdate",
-                        entity = ?client_entity,
-                        server_entity = ?server_entity,
-                        client_id = ?client_id.0,
-                        action = ?DebugName::type_name::<S::Action>(),
-                        local_tick = tick.0,
-                        end_tick = message.end_tick.0,
-                        rebroadcaster = ?rebroadcaster,
-                        num_targets = message.inputs.len(),
-                        "server rebroadcasting input message"
-                    );
-                    match rebroadcaster {
-                        None => {
-                            sender.send::<_, InputChannel>(
-                                &message,
-                                server,
-                                &NetworkTarget::AllExceptSingle(client_id.0)
-                            )?;
-                        }
-                        Some(InputRebroadcaster::Room(room)) => {
-                            let targets: bevy_ecs::entity::EntityHashSet = rooms_query.iter()
-                                .filter(|(e, rooms)| *e != client_entity && rooms.contains_room(*room))
-                                .map(|(e, _)| e)
-                                .collect();
-                            sender.send_to_entities::<_, InputChannel>(
-                                &message,
-                                &targets
-                            )?;
-                        },
-                        Some(InputRebroadcaster::Target(target)) => {
-                            sender.send::<_, InputChannel>(
-                                &message,
-                                server,
-                                target
-                            )?;
-                        }
-                        Some(InputRebroadcaster::Marker(_)) => unreachable!()
+            let do_rebroadcast =
+                config.rebroadcast_inputs && !message.rebroadcast && server.get(server_entity).is_ok();
+            #[cfg(feature = "prediction")]
+            if do_rebroadcast {
+                // Resolve PreSpawned targets to server entities before rebroadcasting,
+                // so that other clients can resolve them via normal entity mapping.
+                for input in message.inputs.iter_mut() {
+                    if let InputTarget::PreSpawned(hash) = input.target
+                        && let Some(server_e) = prespawned.iter()
+                            .find_map(|(e, p)| p.hash.is_some_and(|h| h == hash).then_some(e))
+                    {
+                        input.target = InputTarget::Entity(server_e);
                     }
                 }
             }
+            // The rebroadcast is re-windowed from the server's own buffers
+            // AFTER they absorb this message (see below): a fixed small
+            // client window means one lost rebroadcast packet leaves a
+            // permanent fill in every receiver's buffer — with exact-input
+            // pacing that is an unhealable divergence once it crosses the
+            // rollback horizon. A HISTORY_DEPTH window re-covers any burst
+            // shorter than the buffer.
+            #[cfg(feature = "prediction")]
+            let mut rebroadcast_inputs: Vec<PerTargetData<S>> = Vec::new();
+            #[cfg(feature = "prediction")]
+            let rebroadcast_end_tick = message.end_tick;
+            #[cfg(all(feature = "prediction", feature = "interpolation"))]
+            let rebroadcast_interpolation_delay = message.interpolation_delay;
 
             for data in message.inputs {
                 let Some(entity) = (match data.target {
@@ -571,6 +541,19 @@ fn receive_input_message<S: ActionStateSequence>(
                             input_buffer = %*buffer,
                             "server updated input buffer"
                         );
+                        #[cfg(feature = "prediction")]
+                        if do_rebroadcast
+                            && let Some(states) = S::build_from_input_buffer(
+                                &buffer,
+                                HISTORY_DEPTH,
+                                message.end_tick,
+                            )
+                        {
+                            rebroadcast_inputs.push(PerTargetData {
+                                target: data.target,
+                                states,
+                            });
+                        }
                     } else {
                         debug!("Adding InputBuffer and ActionState which are missing on the entity");
                         let mut buffer = InputBuffer::<S::Snapshot, S::Action>::default();
@@ -613,6 +596,19 @@ fn receive_input_message<S: ActionStateSequence>(
                             input_buffer = %buffer,
                             "server inserted input buffer"
                         );
+                        #[cfg(feature = "prediction")]
+                        if do_rebroadcast
+                            && let Some(states) = S::build_from_input_buffer(
+                                &buffer,
+                                HISTORY_DEPTH,
+                                message.end_tick,
+                            )
+                        {
+                            rebroadcast_inputs.push(PerTargetData {
+                                target: data.target,
+                                states,
+                            });
+                        }
                         commands.entity(entity).insert((
                             buffer,
                             S::State::base_value()
@@ -626,6 +622,64 @@ fn receive_input_message<S: ActionStateSequence>(
                     }
                 } else {
                     debug!(?entity, ?data.states, end_tick = ?message.end_tick, "received input message for non-existing entity");
+                }
+            }
+            #[cfg(feature = "prediction")]
+            if do_rebroadcast && !rebroadcast_inputs.is_empty() {
+                // Re-windowed rebroadcast: HISTORY_DEPTH of buffered inputs
+                // per target, so one lost packet can no longer leave a
+                // permanent fill in the receivers' buffers.
+                let server = server.get(server_entity).expect("do_rebroadcast checked the server");
+                let mut out = InputMessage::<S>::new(rebroadcast_end_tick);
+                out.rebroadcast = true;
+                #[cfg(feature = "interpolation")]
+                {
+                    out.interpolation_delay = rebroadcast_interpolation_delay;
+                }
+                let num_targets = rebroadcast_inputs.len();
+                out.inputs = rebroadcast_inputs;
+                trace!(
+                    target: "lightyear_debug::input",
+                    kind = "server_input_rebroadcast",
+                    schedule = "PreUpdate",
+                    sample_point = "PreUpdate",
+                    entity = ?client_entity,
+                    server_entity = ?server_entity,
+                    client_id = ?client_id.0,
+                    action = ?DebugName::type_name::<S::Action>(),
+                    local_tick = tick.0,
+                    end_tick = rebroadcast_end_tick.0,
+                    rebroadcaster = ?rebroadcaster,
+                    num_targets,
+                    window = HISTORY_DEPTH,
+                    "server rebroadcasting re-windowed input message"
+                );
+                match rebroadcaster {
+                    None => {
+                        sender.send::<_, InputChannel>(
+                            &out,
+                            server,
+                            &NetworkTarget::AllExceptSingle(client_id.0)
+                        )?;
+                    }
+                    Some(InputRebroadcaster::Room(room)) => {
+                        let targets: bevy_ecs::entity::EntityHashSet = rooms_query.iter()
+                            .filter(|(e, rooms)| *e != client_entity && rooms.contains_room(*room))
+                            .map(|(e, _)| e)
+                            .collect();
+                        sender.send_to_entities::<_, InputChannel>(
+                            &out,
+                            &targets
+                        )?;
+                    },
+                    Some(InputRebroadcaster::Target(target)) => {
+                        sender.send::<_, InputChannel>(
+                            &out,
+                            server,
+                            target
+                        )?;
+                    }
+                    Some(InputRebroadcaster::Marker(_)) => unreachable!()
                 }
             }
             Ok(())
