@@ -1588,3 +1588,183 @@ fn test_deterministic_predicted_despawn() {
             .is_err()
     )
 }
+
+/// Reproduction of the Tenacity chaos-gate class (2026-08-19): a per-tick
+/// accumulator gated on a one-shot rule that fired mid-run must replay
+/// bit-identically across an input-kind rollback over the boundary. The
+/// gate flips in FixedPostUpdate (the greybox placement pattern), the
+/// accumulator advances in FixedUpdate (the blade-phase pattern); a
+/// restore that leaves the gate at its CURRENT value would drop or double
+/// advances in the replay.
+#[test]
+fn test_input_rollback_replays_accumulator_across_one_shot_boundary() {
+    let (mut stepper, _predicted) = setup();
+
+    #[derive(Component)]
+    struct Gate;
+
+    let gate = stepper
+        .client_app()
+        .world_mut()
+        .spawn((Predicted, CompFull(0.0), CompNotNetworked(0.0), Gate))
+        .id();
+    let phase = stepper
+        .client_app()
+        .world_mut()
+        .spawn((Predicted, CompFull(0.0)))
+        .id();
+    stepper.frame_step(1);
+
+    let activation = stepper.client_tick(0) + 5;
+    stepper.client_app().add_systems(
+        FixedPostUpdate,
+        move |timeline: Res<LocalTimeline>, mut query: Query<&mut CompFull, With<Gate>>| {
+            if timeline.tick() == activation {
+                for mut g in &mut query {
+                    g.0 = 1.0;
+                }
+            }
+        },
+    );
+    stepper.client_app().add_systems(
+        FixedUpdate,
+        move |mut phases: Query<&mut CompFull, Without<Gate>>, gates: Query<&CompFull, With<Gate>>| {
+            let active = gates.iter().any(|g| g.0 > 0.5);
+            if active {
+                for mut p in &mut phases {
+                    p.0 += 1.0;
+                }
+            }
+        },
+    );
+
+    // 5 ticks to activation, then 10 ticks of accumulation.
+    stepper.tick_step(15);
+    let before = stepper
+        .client_app()
+        .world()
+        .get::<CompFull>(phase)
+        .unwrap()
+        .0;
+    assert_eq!(before, 10.0, "accumulator runs after the one-shot gate");
+
+    // Force an input-kind rollback to just before the gate fired.
+    let target = activation - 2;
+    stepper
+        .client_app()
+        .world_mut()
+        .resource_mut::<StateRollbackMetadata>()
+        .request_forced_input_rollback(target);
+    stepper.frame_step(1);
+
+    // frame_step advances one tick past the trigger point, so a canonical
+    // replay yields exactly one more advance than the pre-trigger value.
+    let after = stepper
+        .client_app()
+        .world()
+        .get::<CompFull>(phase)
+        .unwrap()
+        .0;
+    assert_eq!(
+        before + 1.0,
+        after,
+        "the replay after an input rollback must reproduce the accumulator bit-for-bit"
+    );
+}
+
+/// The missing-history restore gap (Tenacity gotcha #44): a rollback
+/// target with NO prediction-history entry (late attach, reveal timing,
+/// pruned buffer) must not leave the CURRENT live value in place — the
+/// replay then starts from a future value and diverges permanently. The
+/// restore must write the authoritative seed (confirmed history) into the
+/// live component.
+#[test]
+fn test_input_rollback_restores_seed_when_predicted_history_is_missing() {
+    let (mut stepper, _predicted) = setup();
+
+    #[derive(Component)]
+    struct Gate2;
+
+    let gate = stepper
+        .client_app()
+        .world_mut()
+        .spawn((Predicted, CompFull(0.0), CompNotNetworked(0.0), Gate2))
+        .id();
+    let phase = stepper
+        .client_app()
+        .world_mut()
+        .spawn((Predicted, CompFull(0.0)))
+        .id();
+    let spawn_tick = stepper.client_tick(0);
+    // The authoritative seed: the value at spawn (the replicate_once
+    // pattern — confirmed once, never again).
+    insert_confirmed(
+        stepper.client_app().world_mut(),
+        phase,
+        spawn_tick,
+        Some(CompFull(0.0)),
+    );
+    stepper.frame_step(1);
+
+    let activation = stepper.client_tick(0) + 5;
+    stepper.client_app().add_systems(
+        FixedPostUpdate,
+        move |timeline: Res<LocalTimeline>, mut query: Query<&mut CompFull, With<Gate2>>| {
+            if timeline.tick() == activation {
+                for mut g in &mut query {
+                    g.0 = 1.0;
+                }
+            }
+        },
+    );
+    stepper.client_app().add_systems(
+        FixedUpdate,
+        move |mut phases: Query<&mut CompFull, Without<Gate2>>,
+              gates: Query<&CompFull, With<Gate2>>| {
+            let active = gates.iter().any(|g| g.0 > 0.5);
+            if active {
+                for mut p in &mut phases {
+                    p.0 += 1.0;
+                }
+            }
+        },
+    );
+
+    stepper.tick_step(15);
+    let before = stepper
+        .client_app()
+        .world()
+        .get::<CompFull>(phase)
+        .unwrap()
+        .0;
+    assert_eq!(before, 10.0);
+
+    // Simulate the production condition: the component's prediction
+    // history is empty at the rollback target (reveal/attach timing).
+    stepper
+        .client_app()
+        .world_mut()
+        .get_mut::<PredictionHistory<CompFull>>(phase)
+        .unwrap()
+        .clear();
+
+    let target = activation - 2;
+    stepper
+        .client_app()
+        .world_mut()
+        .resource_mut::<StateRollbackMetadata>()
+        .request_forced_input_rollback(target);
+    stepper.frame_step(1);
+
+    let after = stepper
+        .client_app()
+        .world()
+        .get::<CompFull>(phase)
+        .unwrap()
+        .0;
+    assert_eq!(
+        before + 1.0,
+        after,
+        "a restore with no predicted entry must re-seed the live value from confirmed history"
+    );
+}

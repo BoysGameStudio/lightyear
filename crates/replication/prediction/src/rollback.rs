@@ -943,22 +943,30 @@ pub(crate) fn prepare_rollback<C: Component<Mutability = Mutable> + Clone>(
         // current-tick live value — injecting a future value into the past
         // (permanent divergence, see the Some(stale) class in issue #1511).
         predicted_history.clear_after_tick(rollback_tick);
-        if let Some(state) = restore_state.clone() {
-            predicted_history.add_state(rollback_tick, state);
-        } else if let Some(current) = predicted_component.as_deref() {
-            // No state exists at rollback_tick (e.g. the entity was revealed to
-            // this client after the rollback target). Prefer the authoritative
-            // confirmed history for the seed: the live component may carry
-            // presentation dust (frame interpolation rewrites the live value
-            // between ticks for visual smoothing, e.g. 1-ULP interpolation
-            // rounding), which must never enter rollback history — a seeded
-            // dust value persists forever for a never-changed component and
-            // poisons every later checksum read.
-            let seed = confirmed_history
+        // On a history miss, fall back to the authoritative confirmed seed
+        // for BOTH the history anchor and the live restore. Leaving the
+        // live value in place on a miss starts the replay from a future
+        // value (the Tenacity chaos-gate committed-divergence class,
+        // 2026-08-19). The confirmed history is preferred over the live
+        // value because the live component may carry presentation dust
+        // (frame interpolation rewrites it between ticks for visual
+        // smoothing, e.g. 1-ULP rounding) which must never enter rollback
+        // history — and the last-resort `current` fallback writes the
+        // existing live value, i.e. it is behavior-identical to the old
+        // leave-current path when no confirmed state exists.
+        let effective_restore = match restore_state {
+            Some(state) => Some(state),
+            None => confirmed_history
                 .as_ref()
                 .and_then(|history| history.get_state_at_or_before(rollback_tick).cloned())
-                .unwrap_or_else(|| HistoryState::Updated(current.clone()));
-            predicted_history.add_state(rollback_tick, seed);
+                .or_else(|| {
+                    predicted_component
+                        .as_deref()
+                        .map(|current| HistoryState::Updated(current.clone()))
+                }),
+        };
+        if let Some(state) = effective_restore.clone() {
+            predicted_history.add_state(rollback_tick, state);
         }
         trace!(
             target: "lightyear_debug::prediction",
@@ -978,9 +986,9 @@ pub(crate) fn prepare_rollback<C: Component<Mutability = Mutable> + Clone>(
         let mut entity_mut = commands.entity(entity);
 
         // Update the component to the value at rollback_tick
-        match restore_state {
-            // No state exists at rollback_tick. This is not an explicit
-            // removal, so leave the current component value in place.
+        match effective_restore {
+            // Nothing known anywhere: no predicted entry and no confirmed
+            // seed — leave the current component value in place.
             None => {
                 trace!(
                     ?entity,
@@ -989,7 +997,7 @@ pub(crate) fn prepare_rollback<C: Component<Mutability = Mutable> + Clone>(
                     oldest = ?predicted_history.buffer().front().map(|(t, _)| t),
                     newest = ?predicted_history.buffer().back().map(|(t, _)| t),
                     history_len = predicted_history.len(),
-                    "No history entry for component at rollback tick; leaving current value in place"
+                    "No history or confirmed entry for component at rollback tick; leaving current value in place"
                 );
             }
             // An explicit removal means the component was authoritatively removed at rollback_tick.
@@ -997,7 +1005,7 @@ pub(crate) fn prepare_rollback<C: Component<Mutability = Mutable> + Clone>(
                 entity_mut.try_remove::<C>();
                 trace!("Removing component from predicted entity for rollback");
             }
-            // Value exists at rollback_tick (either predicted or confirmed)
+            // Value exists at rollback_tick (predicted, or the confirmed seed)
             Some(HistoryState::Updated(correct)) => {
                 match predicted_component {
                     None => {
