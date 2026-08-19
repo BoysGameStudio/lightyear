@@ -79,8 +79,9 @@ use lightyear_messages::prelude::MessageSender;
 use lightyear_prediction::prelude::*;
 use lightyear_replication::prelude::{ControlledBy, PreSpawned};
 use lightyear_sync::plugin::SyncSystems;
-use lightyear_sync::prelude::{InputTimelineConfig, LocalTimelineSync, SyncedLocalTimeline};
-use lightyear_sync::timeline::remote::RemoteTimeline;
+use lightyear_sync::prelude::{
+    InputTimelineConfig, LocalTimelineSync, RemoteTimeline, SyncedLocalTimeline,
+};
 use lightyear_transport::prelude::ChannelRegistry;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
@@ -821,8 +822,8 @@ fn prepare_input_message<S: ActionStateSequence>(
     // subsequent message re-covers the hole until it fills — even if this
     // client is paused ahead of the stalled server with a static window.
     if let Some(remote) = remote_timeline {
-        let remote_tick: Tick = remote.tick();
-        let gap: i32 = tick - remote_tick;
+        let remote_tick = remote.tick();
+        let gap = tick - remote_tick;
         if gap > 0 {
             num_ticks = num_ticks.max(gap as u32 + 2).min(HISTORY_DEPTH);
         }
