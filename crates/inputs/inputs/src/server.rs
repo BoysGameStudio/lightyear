@@ -68,6 +68,19 @@ const MAX_INPUT_LOOKAHEAD_TICKS: i32 = 64;
 /// reasonable late inputs (up to ~4 s of network lag at 64 Hz).
 const MAX_INPUT_PAST_TICKS: i32 = 256;
 
+/// How far back the server retains received inputs for rebroadcasting.
+///
+/// The rebroadcast re-window rebuilds each outgoing message from the
+/// server's own buffers with this many ticks of redundancy, so one lost
+/// rebroadcast packet can never leave a permanent fill in a receiver's
+/// buffer (the #43(b) class). The depth must cover the fleet's maximum
+/// lead over the server: with exact-input coverage pacing, clients freeze
+/// at most `MAX_INPUT_LOOKAHEAD_TICKS - 2` ticks ahead of a stalled server,
+/// so a window this deep always reaches back to an unhealed hole. It also
+/// matches the client-side rollback horizon (`MAX_ROLLBACK_TICKS + 1` on
+/// the host), keeping the two directions symmetric.
+const REBROADCAST_HISTORY_DEPTH: u32 = 101;
+
 /// Returns `true` iff `end_tick - server_tick` falls within
 /// `[-MAX_INPUT_PAST_TICKS, MAX_INPUT_LOOKAHEAD_TICKS]`. See those constants
 /// for the threat model behind each bound.
@@ -416,8 +429,9 @@ fn receive_input_message<S: ActionStateSequence>(
             // client window means one lost rebroadcast packet leaves a
             // permanent fill in every receiver's buffer — with exact-input
             // pacing that is an unhealable divergence once it crosses the
-            // rollback horizon. A HISTORY_DEPTH window re-covers any burst
-            // shorter than the buffer.
+            // rollback horizon. A REBROADCAST_HISTORY_DEPTH window re-covers
+            // any burst shorter than the buffer — which is why the server
+            // retains that much input history (see `update_action_state`).
             #[cfg(feature = "prediction")]
             let mut rebroadcast_inputs: Vec<PerTargetData<S>> = Vec::new();
             #[cfg(feature = "prediction")]
@@ -545,7 +559,7 @@ fn receive_input_message<S: ActionStateSequence>(
                         if do_rebroadcast
                             && let Some(states) = S::build_from_input_buffer(
                                 &buffer,
-                                HISTORY_DEPTH,
+                                REBROADCAST_HISTORY_DEPTH,
                                 message.end_tick,
                             )
                         {
@@ -600,7 +614,7 @@ fn receive_input_message<S: ActionStateSequence>(
                         if do_rebroadcast
                             && let Some(states) = S::build_from_input_buffer(
                                 &buffer,
-                                HISTORY_DEPTH,
+                                REBROADCAST_HISTORY_DEPTH,
                                 message.end_tick,
                             )
                         {
@@ -626,9 +640,9 @@ fn receive_input_message<S: ActionStateSequence>(
             }
             #[cfg(feature = "prediction")]
             if do_rebroadcast && !rebroadcast_inputs.is_empty() {
-                // Re-windowed rebroadcast: HISTORY_DEPTH of buffered inputs
-                // per target, so one lost packet can no longer leave a
-                // permanent fill in the receivers' buffers.
+                // Re-windowed rebroadcast: REBROADCAST_HISTORY_DEPTH of
+                // buffered inputs per target, so one lost packet can no
+                // longer leave a permanent fill in the receivers' buffers.
                 let server = server.get(server_entity).expect("do_rebroadcast checked the server");
                 let mut out = InputMessage::<S>::new(rebroadcast_end_tick);
                 out.rebroadcast = true;
@@ -651,7 +665,7 @@ fn receive_input_message<S: ActionStateSequence>(
                     end_tick = rebroadcast_end_tick.0,
                     rebroadcaster = ?rebroadcaster,
                     num_targets,
-                    window = HISTORY_DEPTH,
+                    window = REBROADCAST_HISTORY_DEPTH,
                     "server rebroadcasting re-windowed input message"
                 );
                 match rebroadcaster {
@@ -795,8 +809,12 @@ fn update_action_state<S: ActionStateSequence>(
         let history_depth = if host_client {
             HISTORY_DEPTH
         } else {
-            // if we are a server and not a host-client, there is no need to keep history
-            1
+            // A rebroadcasting server DOES need history: the re-windowed
+            // rebroadcast rebuilds from these buffers with
+            // `REBROADCAST_HISTORY_DEPTH` of redundancy, and a received tick
+            // that is popped before every in-flight rebroadcast covered it
+            // becomes a permanent hole on the receivers.
+            REBROADCAST_HISTORY_DEPTH
         };
         // TODO: + we also want to keep enough inputs on the client to be able to do prediction effectively!
         // remove all the previous values
