@@ -219,19 +219,32 @@ pub trait ActionStateSequence:
                 // forever. The comparison is semantic (`equivalent_to`): the
                 // wire encoding does not preserve transport representation
                 // details, so full-equality would false-positive here.
+                //
+                // A fabricated tick must additionally be repaired even when
+                // the arriving value is EQUAL to the held one: `get_raw` is
+                // the fabrication oracle for exact-input coverage pacing, and
+                // an unrepaired fill stalls the pacing forever even though
+                // its content is already correct. Healing the marker is not a
+                // mismatch — nothing was mispredicted when the values agree.
                 if last_remote_tick.is_some_and(|t| tick <= t)
                     && input_buffer
                         .start_tick
                         .is_some_and(|start| tick >= start)
                     && let Some(incoming) = &latest_received_input
                 {
+                    let fabricated = matches!(
+                        input_buffer.get_raw(tick),
+                        Compressed::SameAsPrecedent
+                    );
                     let differs = match input_buffer.get(tick) {
                         Some(stored) => !stored.equivalent_to(incoming),
                         None => true,
                     };
-                    if differs {
+                    if differs || fabricated {
                         input_buffer.set_raw(tick, Compressed::Input(incoming.clone()));
-                        earliest_mismatch = Some(tick);
+                        if differs {
+                            earliest_mismatch = Some(tick);
+                        }
                     }
                     continue;
                 }
@@ -244,6 +257,15 @@ pub trait ActionStateSequence:
                         if previous_end_tick.is_none_or(|end_tick| tick > end_tick) {
                             input_buffer
                                 .set_raw(tick, Compressed::from(latest_received_input.clone()));
+                        } else if let Some(latest) = &latest_received_input
+                            && matches!(
+                                input_buffer.get_raw(tick),
+                                Compressed::SameAsPrecedent
+                            )
+                        {
+                            // Same fabrication heal as above: the held content
+                            // just provably arrived — mark the tick received.
+                            input_buffer.set_raw(tick, Compressed::Input(latest.clone()));
                         }
                         continue;
                     }
