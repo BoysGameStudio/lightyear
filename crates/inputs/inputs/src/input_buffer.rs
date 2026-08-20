@@ -35,6 +35,15 @@ pub struct InputBuffer<S, M> {
     /// (this is necessary because even without receiving a remote tick we keep updating the buffer with
     /// predicted inputs)
     pub last_remote_tick: Option<Tick>,
+    /// Resolution base for a `SameAsPrecedent` entry sitting at the buffer
+    /// front: the last real value popped off the front. A front fill is
+    /// NEVER promoted to `Compressed::Input` — `get_raw` is the fabrication
+    /// oracle for exact-input coverage pacing, and a promoted fill reads as
+    /// a received input, which lets a peer simulate a tick it never
+    /// actually received (the coverage-poisoning class). The value here
+    /// keeps `get` resolving a front fill exactly as the promotion did.
+    #[reflect(ignore)]
+    precedent_before_start: Option<S>,
     #[reflect(ignore)]
     pub marker: core::marker::PhantomData<M>,
 }
@@ -100,6 +109,7 @@ impl<T, M> Default for InputBuffer<T, M> {
             buffer: VecDeque::new(),
             start_tick: None,
             last_remote_tick: None,
+            precedent_before_start: None,
             marker: Default::default(),
         }
     }
@@ -247,6 +257,7 @@ impl<T: Clone + PartialEq, M> InputBuffer<T, M> {
             // pop everything
             self.buffer = VecDeque::new();
             self.start_tick = Some(tick + 1);
+            self.precedent_before_start = None;
             return None;
         }
 
@@ -264,10 +275,17 @@ impl<T: Clone + PartialEq, M> InputBuffer<T, M> {
         }
         self.start_tick = Some(tick + 1);
 
-        // if the next value after we popped was 'SameAsPrecedent', we need to override it with an actual value
-        if let Some(Compressed::SameAsPrecedent) = self.buffer.front() {
-            *self.buffer.front_mut().unwrap() = popped.clone();
-        }
+        // A `SameAsPrecedent` fill at the new front must NOT be promoted to
+        // `Compressed::Input`: `get_raw` is the fabrication oracle for
+        // exact-input coverage pacing, and a promoted fill reads as a
+        // received input — a peer then simulates a tick it never received
+        // and the later real input lands as an unhealable correction (the
+        // coverage-poisoning class). Keep the fill and stash the resolution
+        // base here so `get` resolves a front fill exactly as before.
+        self.precedent_before_start = match &popped {
+            Compressed::Input(value) => Some(value.clone()),
+            _ => None,
+        };
 
         match popped {
             Compressed::Input(value) => Some(value),
@@ -303,8 +321,16 @@ impl<T: Clone + PartialEq, M> InputBuffer<T, M> {
         match data {
             Compressed::Absent => None,
             Compressed::SameAsPrecedent => {
-                // get the data from the preceding tick
-                self.get(tick - 1)
+                if tick > start_tick {
+                    // get the data from the preceding tick
+                    self.get(tick - 1)
+                } else {
+                    // the precedent was popped already: resolve from the
+                    // value the last pop stashed (identical to the old
+                    // front-promotion result, but the entry keeps its
+                    // fabricated marker for coverage oracles)
+                    self.precedent_before_start.as_ref()
+                }
             }
             Compressed::Input(data) => Some(data),
         }
@@ -328,8 +354,12 @@ impl<T: Clone + PartialEq, M> InputBuffer<T, M> {
         match data {
             Compressed::Absent => None,
             Compressed::SameAsPrecedent => {
-                // get the data from the preceding tick
-                self.get(tick - 1)
+                if tick > start_tick {
+                    // get the data from the preceding tick
+                    self.get(tick - 1)
+                } else {
+                    self.precedent_before_start.as_ref()
+                }
             }
             Compressed::Input(data) => Some(data),
         }
@@ -391,12 +421,16 @@ mod tests {
         assert_eq!(input_buffer.pop(Tick(5)), Some(0));
         assert_eq!(input_buffer.start_tick, Some(Tick(6)));
 
-        // if the next value in the buffer after we pop is SameAsPrecedent, it should
-        // get replaced with a real value
+        // if the next value in the buffer after we pop is SameAsPrecedent, it must
+        // KEEP its fabricated marker (get_raw is the coverage oracle) while `get`
+        // still resolves the held value via the stashed precedent
         assert_eq!(input_buffer.pop(Tick(7)), Some(1));
         assert_eq!(input_buffer.start_tick, Some(Tick(8)));
         assert_eq!(input_buffer.get(Tick(8)), Some(&1));
-        assert_eq!(input_buffer.get_raw(Tick(8)), &Compressed::Input(1));
+        assert_eq!(
+            input_buffer.get_raw(Tick(8)),
+            &Compressed::SameAsPrecedent
+        );
         assert_eq!(input_buffer.buffer.len(), 1);
     }
 
@@ -489,6 +523,33 @@ mod tests {
         assert_eq!(input_buffer.end_tick(), Some(Tick(5)));
         input_buffer.set(Tick(7), 2);
         assert_eq!(input_buffer.end_tick(), Some(Tick(7)));
+    }
+
+    /// The coverage oracle: a gap-fill must NEVER read as a received input,
+    /// even after pops advance the buffer floor onto it — the old
+    /// front-promotion laundered the fill into `Compressed::Input`, which
+    /// let an exact-input-pacing peer simulate a tick it never received
+    /// (the coverage-poisoning class). `get` resolution is unchanged.
+    #[test]
+    fn test_front_fill_keeps_fabricated_marker_after_pop() {
+        let mut buf: InputBuffer<i32, i32> = InputBuffer::default();
+        buf.set(Tick(10), 1);
+        // ticks 11-12 are gap-fills, tick 13 is real
+        buf.set(Tick(13), 2);
+
+        // advance the floor onto the fill at 11
+        assert_eq!(buf.pop(Tick(10)), Some(1));
+        assert_eq!(buf.start_tick, Some(Tick(11)));
+        assert_eq!(buf.get_raw(Tick(11)), &Compressed::SameAsPrecedent);
+        // ... but resolution is unchanged (the stashed precedent)
+        assert_eq!(buf.get(Tick(11)), Some(&1));
+        assert_eq!(buf.get_predict(Tick(11)), Some(&1));
+        assert_eq!(buf.get(Tick(12)), Some(&1));
+        assert_eq!(buf.get(Tick(13)), Some(&2));
+        // a fill popped mid-chain is skipped like before (the stash tracks
+        // the last real-or-absent pop, matching the old promotion's result)
+        assert_eq!(buf.pop(Tick(11)), None);
+        assert_eq!(buf.get_raw(Tick(12)), &Compressed::SameAsPrecedent);
     }
 
     #[test]
