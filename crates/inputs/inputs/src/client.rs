@@ -754,6 +754,8 @@ fn prepare_input_message<S: ActionStateSequence>(
     real_time: Res<Time<Real>>,
     mut send_timer: Local<Option<Timer>>,
     remote_timeline: Option<Single<&RemoteTimeline, With<lightyear_connection::client::Client>>>,
+    prediction_manager: Option<Res<PredictionManager>>,
+    input_timeline_config: Res<InputTimelineConfig>,
 ) {
     let Some(route) = InputRoute::from_topology(&metadata.mode) else {
         return;
@@ -820,11 +822,25 @@ fn prepare_input_message<S: ActionStateSequence>(
     // while the server stalls on a hole its timeline stops, so every
     // subsequent message re-covers the hole until it fills — even if this
     // client is paused ahead of the stalled server with a static window.
+    //
+    // Anchor on the last tick the server actually stamped on a received
+    // packet (`last_received_tick`), never the extrapolated estimate: during
+    // a server stall the estimate keeps extrapolating forward, which shrinks
+    // the computed gap and lets the window slide past the unhealed hole
+    // (Tenacity chaos+loss hunt, 2026-08-20). The cap is the client buffer's
+    // real retention depth (rollback depth + 1, typically > HISTORY_DEPTH):
+    // anything deeper is unservable anyway, and the host's production pacing
+    // pauses the client before the gap outgrows it.
     if let Some(remote) = remote_timeline {
-        let remote_tick: Tick = remote.tick();
+        let remote_tick: Tick = remote.last_received_tick().unwrap_or_else(|| remote.tick());
         let gap: i32 = tick - remote_tick;
         if gap > 0 {
-            num_ticks = num_ticks.max(gap as u32 + 2).min(HISTORY_DEPTH);
+            let max_window = input_history_depth(
+                prediction_manager
+                    .as_deref()
+                    .map(|manager| (manager, input_timeline_config.as_ref())),
+            );
+            num_ticks = num_ticks.max(gap as u32 + 2).min(max_window);
         }
     }
     let mut message = InputMessage::<S>::new(tick);
