@@ -1,10 +1,14 @@
 use crate::action_state::LeafwingUserAction;
-#[cfg(feature = "client")]
-use bevy_app::FixedPreUpdate;
 use bevy_app::{App, Plugin};
 #[cfg(feature = "client")]
+use bevy_app::{FixedPostUpdate, FixedPreUpdate};
+#[cfg(feature = "client")]
 use bevy_ecs::schedule::IntoScheduleConfigs;
+#[cfg(feature = "client")]
+use bevy_ecs::system::Query;
 use leafwing_input_manager::action_state::ActionState;
+#[cfg(feature = "client")]
+use lightyear_core::prelude::is_in_rollback;
 use lightyear_inputs::config::InputConfig;
 use lightyear_inputs::input_buffer::InputBuffer;
 #[cfg(feature = "client")]
@@ -19,6 +23,15 @@ use tracing::trace;
 
 pub struct InputPlugin<A> {
     pub config: InputConfig<A>,
+}
+
+#[cfg(feature = "client")]
+fn sync_fixed_update_state_after_rollback<A: LeafwingUserAction>(
+    mut action_states: Query<&mut ActionState<A>>,
+) {
+    for mut action_state in &mut action_states {
+        action_state.set_fixed_update_state_from_state();
+    }
 }
 
 impl<A> Default for InputPlugin<A> {
@@ -88,6 +101,12 @@ impl<A: LeafwingUserAction> Plugin for InputPlugin<A> {
                     FixedPreUpdate,
                     lightyear_inputs::client::InputSystems::RestoreInputs
                         .before(InputManagerSystem::Tick),
+                );
+                app.add_systems(
+                    FixedPostUpdate,
+                    sync_fixed_update_state_after_rollback::<A>
+                        .after(InputManagerSystem::Tick)
+                        .run_if(is_in_rollback),
                 );
 
                 return;

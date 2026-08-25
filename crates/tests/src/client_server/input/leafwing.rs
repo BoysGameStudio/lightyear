@@ -1,16 +1,243 @@
 use crate::protocol::LeafwingInput1;
 use crate::stepper::*;
+use bevy::app::{FixedLast, FixedUpdate};
+use bevy::ecs::resource::Resource;
+use bevy::ecs::system::{Query, Res, ResMut};
 use bevy::input::ButtonInput;
-use bevy::prelude::KeyCode;
+use bevy::prelude::{Entity, KeyCode};
 use leafwing_input_manager::action_state::ActionState;
 use leafwing_input_manager::prelude::InputMap;
 use lightyear::input::leafwing::prelude::LeafwingBuffer;
 use lightyear_connection::network_target::NetworkTarget;
+use lightyear_core::prelude::{LocalTimeline, Rollback, Tick};
 use lightyear_messages::MessageManager;
+use lightyear_prediction::prelude::StateRollbackMetadata;
 use lightyear_replication::prelude::Replicate;
 use lightyear_sync::prelude::client::InputDelayConfig;
 use lightyear_sync::prelude::*;
 use test_log::test;
+
+#[derive(Debug)]
+struct LeafwingRollbackObservation {
+    tick: Tick,
+    rollback: bool,
+    pressed: bool,
+    just_pressed: bool,
+    fixed_pressed: bool,
+    fixed_just_pressed: bool,
+}
+
+#[derive(Resource)]
+struct ObservedLeafwingEntity(Entity);
+
+#[derive(Resource, Default, Debug)]
+struct LeafwingRollbackTrace {
+    observations: Vec<LeafwingRollbackObservation>,
+    just_pressed_ticks: Vec<Tick>,
+    deadline: Option<Tick>,
+    replay_fixed_post: Vec<LeafwingRollbackObservation>,
+}
+
+fn record_leafwing_edge(
+    timeline: Res<LocalTimeline>,
+    rollback: Option<Res<Rollback>>,
+    target: Res<ObservedLeafwingEntity>,
+    actions: Query<&ActionState<LeafwingInput1>>,
+    mut trace: ResMut<LeafwingRollbackTrace>,
+) {
+    let action = actions.get(target.0).unwrap();
+    let (fixed_pressed, fixed_just_pressed) = action
+        .button_data(&LeafwingInput1::Jump)
+        .map(|button| {
+            (
+                button.fixed_update_state.pressed(),
+                button.fixed_update_state.just_pressed(),
+            )
+        })
+        .unwrap_or((false, false));
+    let observation = LeafwingRollbackObservation {
+        tick: timeline.tick(),
+        rollback: rollback.is_some(),
+        pressed: action.pressed(&LeafwingInput1::Jump),
+        just_pressed: action.just_pressed(&LeafwingInput1::Jump),
+        fixed_pressed,
+        fixed_just_pressed,
+    };
+    if observation.just_pressed {
+        trace.just_pressed_ticks.push(observation.tick);
+        trace.deadline = Some(observation.tick + 13);
+    }
+    trace.observations.push(observation);
+}
+
+fn record_leafwing_replay_fixed_post(
+    timeline: Res<LocalTimeline>,
+    rollback: Option<Res<Rollback>>,
+    target: Res<ObservedLeafwingEntity>,
+    actions: Query<&ActionState<LeafwingInput1>>,
+    mut trace: ResMut<LeafwingRollbackTrace>,
+) {
+    if rollback.is_none() {
+        return;
+    }
+    let action = actions.get(target.0).unwrap();
+    let (fixed_pressed, fixed_just_pressed) = action
+        .button_data(&LeafwingInput1::Jump)
+        .map(|button| {
+            (
+                button.fixed_update_state.pressed(),
+                button.fixed_update_state.just_pressed(),
+            )
+        })
+        .unwrap_or((false, false));
+    trace.replay_fixed_post.push(LeafwingRollbackObservation {
+        tick: timeline.tick(),
+        rollback: true,
+        pressed: action.pressed(&LeafwingInput1::Jump),
+        just_pressed: action.just_pressed(&LeafwingInput1::Jump),
+        fixed_pressed,
+        fixed_just_pressed,
+    });
+}
+
+#[test]
+fn test_forced_input_rollback_preserves_leafwing_fixed_scope() {
+    let mut config = StepperConfig::single();
+    config.init = false;
+    let mut stepper = ClientServerStepper::from_config(config);
+    stepper.client_app().world_mut().insert_resource(
+        InputTimelineConfig::default().with_input_delay(InputDelayConfig::fixed_input_delay(0)),
+    );
+    stepper.init();
+
+    let server_entity = stepper
+        .server_app
+        .world_mut()
+        .spawn((
+            ActionState::<LeafwingInput1>::default(),
+            Replicate::to_clients(NetworkTarget::All),
+        ))
+        .id();
+    stepper.frame_step(2);
+    let client_entity = stepper
+        .client(0)
+        .get::<MessageManager>()
+        .unwrap()
+        .entity_mapper
+        .get_local(server_entity)
+        .expect("entity is not present in entity map");
+    stepper
+        .client_app()
+        .world_mut()
+        .entity_mut(client_entity)
+        .insert(InputMap::<LeafwingInput1>::new([(
+            LeafwingInput1::Jump,
+            KeyCode::KeyA,
+        )]));
+
+    stepper
+        .client_app()
+        .insert_resource(ObservedLeafwingEntity(client_entity));
+    stepper
+        .client_app()
+        .init_resource::<LeafwingRollbackTrace>();
+    stepper
+        .client_app()
+        .add_systems(FixedUpdate, record_leafwing_edge);
+    stepper
+        .client_app()
+        .add_systems(FixedLast, record_leafwing_replay_fixed_post);
+    stepper
+        .server_app
+        .insert_resource(ObservedLeafwingEntity(server_entity));
+    stepper.server_app.init_resource::<LeafwingRollbackTrace>();
+    stepper
+        .server_app
+        .add_systems(FixedUpdate, record_leafwing_edge);
+
+    stepper.frame_step(1);
+    stepper
+        .client_app()
+        .world_mut()
+        .resource_mut::<LeafwingRollbackTrace>()
+        .observations
+        .clear();
+    stepper
+        .server_app
+        .world_mut()
+        .resource_mut::<LeafwingRollbackTrace>()
+        .observations
+        .clear();
+
+    stepper
+        .client_app()
+        .world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .press(KeyCode::KeyA);
+    stepper.frame_step(1);
+    let edge_tick = stepper.client_tick(0);
+
+    stepper
+        .client_app()
+        .world_mut()
+        .resource_mut::<StateRollbackMetadata>()
+        .request_forced_input_rollback(edge_tick - 1);
+    stepper.frame_step(1);
+    stepper.tick_step(12);
+
+    let client_trace = stepper.client_apps[0]
+        .world()
+        .resource::<LeafwingRollbackTrace>();
+    let server_trace = stepper
+        .server_app
+        .world()
+        .resource::<LeafwingRollbackTrace>();
+    let mut unique_client_edges = client_trace.just_pressed_ticks.clone();
+    unique_client_edges.sort();
+    unique_client_edges.dedup();
+    let replay_state = client_trace
+        .replay_fixed_post
+        .iter()
+        .find(|observation| observation.tick == edge_tick)
+        .expect("forced rollback did not replay the canonical edge tick");
+    let server_edge = server_trace
+        .just_pressed_ticks
+        .first()
+        .copied()
+        .expect("server never reconstructed the physical input edge");
+    tracing::info!(
+        ?edge_tick,
+        client_edges = ?client_trace.just_pressed_ticks,
+        client_deadline = ?client_trace.deadline,
+        replay_pressed = replay_state.pressed,
+        replay_just_pressed = replay_state.just_pressed,
+        replay_fixed_pressed = replay_state.fixed_pressed,
+        replay_fixed_just_pressed = replay_state.fixed_just_pressed,
+        server_edges = ?server_trace.just_pressed_ticks,
+        server_deadline = ?server_trace.deadline,
+        "rollback observations"
+    );
+
+    assert!(
+        unique_client_edges == [edge_tick]
+            && client_trace
+                .just_pressed_ticks
+                .iter()
+                .filter(|tick| **tick == edge_tick)
+                .count()
+                >= 2
+            && !client_trace.just_pressed_ticks.contains(&(edge_tick + 1))
+            && client_trace.deadline == Some(edge_tick + 13)
+            && replay_state.rollback
+            && replay_state.pressed
+            && !replay_state.just_pressed
+            && replay_state.fixed_pressed
+            && !replay_state.fixed_just_pressed
+            && server_trace.just_pressed_ticks.len() == 1
+            && server_trace.deadline == Some(server_edge + 13),
+        "forced rollback changed Leafwing edge semantics:\nedge_tick={edge_tick:?}\nclient={client_trace:#?}\nserver={server_trace:#?}"
+    );
+}
 
 /// Check that ActionStates are stored correctly in the InputBuffer
 #[test]
