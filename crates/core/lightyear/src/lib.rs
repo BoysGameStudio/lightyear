@@ -299,9 +299,10 @@ mod client;
 #[cfg(feature = "server")]
 mod server;
 
+#[cfg(any(feature = "client", feature = "server"))]
 mod shared;
 
-#[cfg(feature = "replication")]
+#[cfg(all(feature = "replication", any(feature = "client", feature = "server")))]
 mod protocol;
 
 pub mod core {

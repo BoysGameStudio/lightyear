@@ -6,6 +6,7 @@
 //! Note: we don't have a good way to guarantee that we are iterating through entities in a stable order on both client and server.
 //! Because of this, we will compute an order-independent checksum by only hashing component data and then XOR-ing the results together.
 
+#[cfg(any(feature = "client", feature = "server"))]
 use crate::archetypes::ChecksumWorld;
 #[cfg(all(feature = "client", feature = "replication"))]
 use crate::late_join::CatchUpManager;
@@ -15,8 +16,11 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 #[cfg(feature = "server")]
 use bevy_app::FixedLast;
-use bevy_app::{App, Plugin, PostUpdate};
+use bevy_app::{App, Plugin};
+#[cfg(any(feature = "client", feature = "server"))]
+use bevy_app::PostUpdate;
 use bevy_ecs::prelude::*;
+#[cfg(any(feature = "client", feature = "server"))]
 use core::hash::Hasher;
 #[cfg(all(feature = "client", feature = "replication"))]
 use lightyear_connection::client::Client;
@@ -50,6 +54,7 @@ use lightyear_sync::prelude::{InputTimelineConfig, SyncedLocalTimeline};
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "p2p", feature = "server"))]
 use tracing::error;
+#[cfg(any(feature = "client", feature = "server"))]
 use tracing::{debug, trace};
 
 /// History of the checksums on the server to validate client checksums against.

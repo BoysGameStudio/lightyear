@@ -261,8 +261,9 @@ impl<T: Clone + PartialEq, M> InputBuffer<T, M> {
             return None;
         }
 
-        // popped will represent the last value popped
-        let mut popped = Compressed::Absent;
+        // Removing only compressed fills does not replace the resolution base.
+        // Explicit absence still clears it, and a received value replaces it.
+        let mut popped = Compressed::SameAsPrecedent;
         for _ in 0..(tick + 1 - start_tick) {
             // front is the oldest value
             let data = self.buffer.pop_front().unwrap();
@@ -282,10 +283,11 @@ impl<T: Clone + PartialEq, M> InputBuffer<T, M> {
         // and the later real input lands as an unhealable correction (the
         // coverage-poisoning class). Keep the fill and stash the resolution
         // base here so `get` resolves a front fill exactly as before.
-        self.precedent_before_start = match &popped {
-            Compressed::Input(value) => Some(value.clone()),
-            _ => None,
-        };
+        match &popped {
+            Compressed::Input(value) => self.precedent_before_start = Some(value.clone()),
+            Compressed::Absent => self.precedent_before_start = None,
+            Compressed::SameAsPrecedent => {}
+        }
 
         match popped {
             Compressed::Input(value) => Some(value),
@@ -550,6 +552,32 @@ mod tests {
         // the last real-or-absent pop, matching the old promotion's result)
         assert_eq!(buf.pop(Tick(11)), None);
         assert_eq!(buf.get_raw(Tick(12)), &Compressed::SameAsPrecedent);
+        assert_eq!(buf.get(Tick(12)), Some(&1));
+        assert_eq!(buf.get_predict(Tick(12)), Some(&1));
+    }
+
+    #[test]
+    fn repeated_fill_pops_preserve_values_and_explicit_absence() {
+        let mut buf: InputBuffer<i32, i32> = InputBuffer::default();
+        buf.set(Tick(10), 1);
+        buf.set(Tick(14), 2);
+        buf.set_empty(Tick(15));
+        buf.set(Tick(18), 3);
+        for tick in 10..14 {
+            buf.pop(Tick(tick));
+            if tick < 13 {
+                assert_eq!(buf.get(Tick(13)), Some(&1));
+                assert_eq!(buf.get_raw(Tick(tick + 1)), &Compressed::SameAsPrecedent);
+            }
+            assert_eq!(buf.get(Tick(14)), Some(&2));
+        }
+        buf.pop(Tick(14));
+        for tick in 15..17 {
+            buf.pop(Tick(tick));
+            assert_eq!(buf.get(Tick(17)), None);
+            assert_eq!(buf.get_raw(Tick(tick + 1)), &Compressed::SameAsPrecedent);
+            assert_eq!(buf.get(Tick(18)), Some(&3));
+        }
     }
 
     #[test]
