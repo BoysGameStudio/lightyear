@@ -41,8 +41,7 @@ impl Default for LagCompensationConfig {
     }
 }
 
-#[deprecated(note = "Use LagCompensationSystems instead")]
-pub type LagCompensationSet = LagCompensationSystems;
+
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LagCompensationSystems {

@@ -591,3 +591,32 @@ impl PredictionManager {
         *self.rollback.write().deref_mut() = RollbackState::RollbackStart(tick)
     }
 }
+
+#[cfg(test)]
+mod forced_request_tests {
+    use super::*;
+
+    #[test]
+    fn equal_tick_retains_the_first_restore_kind_and_earlier_tick_replaces_it() {
+        let mut metadata = StateRollbackMetadata::default();
+        metadata.request_forced_input_rollback(Tick(10));
+        metadata.request_forced_rollback(Tick(10));
+        assert!(matches!(
+            metadata.take_forced_rollback(),
+            Some((Tick(10), Rollback::FromInputs))
+        ));
+        metadata.request_forced_rollback(Tick(10));
+        metadata.request_forced_input_rollback(Tick(10));
+        assert!(matches!(
+            metadata.take_forced_rollback(),
+            Some((Tick(10), Rollback::FromState))
+        ));
+        metadata.request_forced_rollback(Tick(10));
+        metadata.request_forced_input_rollback(Tick(9));
+        assert!(matches!(
+            metadata.take_forced_rollback(),
+            Some((Tick(9), Rollback::FromInputs))
+        ));
+        assert!(metadata.take_forced_rollback().is_none());
+    }
+}

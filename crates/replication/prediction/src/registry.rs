@@ -33,7 +33,7 @@ use lightyear_replication::diff_history::HistoryDiffReceiver;
 use lightyear_replication::diffable::Diffable;
 use lightyear_replication::prelude::PreSpawned;
 use lightyear_replication::registry::replication::{
-    AppComponentExt, ComponentRegistration, ComponentRegistrator,
+    ComponentRegistration, ComponentRegistrator,
 };
 use lightyear_replication::registry::{ComponentError, ComponentKind, ComponentRegistry, LerpFn};
 #[cfg(feature = "metrics")]
@@ -623,17 +623,6 @@ impl PredictionRegistry {
 }
 
 pub trait PredictionRegistrationExt<C> {
-    /// Enable prediction for this component.
-    #[deprecated(note = "use `app.component::<C>().predict()` instead")]
-    fn add_prediction(self) -> Self
-    where
-        C: SyncComponent;
-
-    /// Enable prediction for a component replicated with Replicon's diff-based mode.
-    #[deprecated(note = "use `app.component::<C>().replicate_diff().predict_diff()` instead")]
-    fn add_prediction_diff(self) -> Self
-    where
-        C: SyncComponent + RepliconDiffable;
 
     /// Register `write_history` as the default replicon receive function for
     /// this component, so that replicated values are stored in
@@ -659,12 +648,6 @@ pub trait PredictionRegistrationExt<C> {
     /// for example when `Position`/`Rotation` are predicted but correction and
     /// frame interpolation are applied on `Transform`.
     fn custom_correction(self) -> Self
-    where
-        C: SyncComponent;
-
-    /// Enables correction for this component, without adding the correction systems.
-    #[deprecated(note = "use `custom_correction()` instead")]
-    fn enable_correction(self) -> Self
     where
         C: SyncComponent;
 
@@ -726,20 +709,6 @@ pub trait PredictionRegistrationExt<C> {
     where
         C: SyncComponent + Diffable<D>,
         D: Debug + Clone + Default + Send + Sync + 'static;
-
-    /// Add a custom comparison function to determine if we should rollback by comparing the
-    /// confirmed component with the predicted component's history.
-    ///
-    /// Kept for backwards compatibility. Prefer
-    /// [`PredictionBuilderExt::predict`] or
-    /// [`PredictionAppRegistrationExt::local_rollback`] followed by
-    /// `with_rollback_condition`, so the call order is explicit in the type.
-    #[deprecated(
-        note = "use `.predict().with_rollback_condition(...)` or `local_rollback::<C>().with_rollback_condition(...)` instead"
-    )]
-    fn add_should_rollback(self, should_rollback: ShouldRollbackFn<C>) -> Self
-    where
-        C: SyncComponent;
 }
 
 /// Registration state returned after prediction has been enabled for a component.
@@ -767,31 +736,12 @@ impl<'a, C> PredictedComponentRegistration<'a, C> {
 
     /// Add a custom comparison function to determine if we should rollback by
     /// comparing the confirmed component with the predicted component's history.
-    #[allow(deprecated)]
     pub fn with_rollback_condition(mut self, should_rollback: ShouldRollbackFn<C>) -> Self
     where
         C: SyncComponent,
     {
-        self.registration = self.registration.add_should_rollback(should_rollback);
+        self.registration = configure_rollback_condition(self.registration, should_rollback);
         self
-    }
-
-    /// Backwards-compatible spelling for [`Self::with_rollback_condition`].
-    #[deprecated(note = "use `.with_rollback_condition(...)` instead")]
-    pub fn should_rollback(self, should_rollback: ShouldRollbackFn<C>) -> Self
-    where
-        C: SyncComponent,
-    {
-        self.with_rollback_condition(should_rollback)
-    }
-
-    /// Backwards-compatible spelling for [`Self::with_rollback_condition`].
-    #[deprecated(note = "use `.with_rollback_condition(...)` instead")]
-    pub fn add_should_rollback(self, should_rollback: ShouldRollbackFn<C>) -> Self
-    where
-        C: SyncComponent,
-    {
-        self.with_rollback_condition(should_rollback)
     }
 
     /// Marks this component as using custom correction logic.
@@ -804,15 +754,6 @@ impl<'a, C> PredictedComponentRegistration<'a, C> {
     {
         self.registration = self.registration.custom_correction();
         self
-    }
-
-    /// Backwards-compatible spelling for [`Self::custom_correction`].
-    #[deprecated(note = "use `.custom_correction()` instead")]
-    pub fn enable_correction(self) -> Self
-    where
-        C: SyncComponent,
-    {
-        self.custom_correction()
     }
 
     /// Add visual correction for this component using `C` as its own rollback
@@ -891,6 +832,9 @@ pub trait PredictionBuilderExt<'a, C>: ComponentRegistrator<'a, C> {
 
     /// Enable local rollback for a component or resource that is not handled
     /// by Replicon's prediction marker writes.
+    /// Resource values must be modified only within the rollback-owned FixedMain
+    /// schedule. Do not register Time<Fixed>: its outer Bevy update is outside
+    /// that schedule, and Lightyear already restores its clock internally.
     fn local_rollback(self) -> LocalRollbackComponentRegistration<'a, C>
     where
         C: Component<Mutability = Mutable> + Clone;
@@ -900,21 +844,19 @@ impl<'a, C, R> PredictionBuilderExt<'a, C> for R
 where
     R: ComponentRegistrator<'a, C>,
 {
-    #[allow(deprecated)]
     fn predict(self) -> PredictedComponentRegistration<'a, C>
     where
         C: SyncComponent,
     {
-        PredictedComponentRegistration::new(self.into_component_registration().add_prediction())
+        PredictedComponentRegistration::new(initialize_prediction(self.into_component_registration()))
     }
 
-    #[allow(deprecated)]
     fn predict_diff(self) -> PredictedComponentRegistration<'a, C>
     where
         C: SyncComponent + RepliconDiffable,
     {
         PredictedComponentRegistration::new(
-            self.into_component_registration().add_prediction_diff(),
+            initialize_diff_prediction(self.into_component_registration()),
         )
     }
 
@@ -941,31 +883,12 @@ impl<'a, C> LocalRollbackComponentRegistration<'a, C> {
 
     /// Add a custom comparison function to determine if we should rollback by
     /// comparing the confirmed component with the predicted component's history.
-    #[allow(deprecated)]
     pub fn with_rollback_condition(mut self, should_rollback: ShouldRollbackFn<C>) -> Self
     where
         C: SyncComponent,
     {
-        self.registration = self.registration.add_should_rollback(should_rollback);
+        self.registration = configure_rollback_condition(self.registration, should_rollback);
         self
-    }
-
-    /// Backwards-compatible spelling for [`Self::with_rollback_condition`].
-    #[deprecated(note = "use `.with_rollback_condition(...)` instead")]
-    pub fn should_rollback(self, should_rollback: ShouldRollbackFn<C>) -> Self
-    where
-        C: SyncComponent,
-    {
-        self.with_rollback_condition(should_rollback)
-    }
-
-    /// Backwards-compatible spelling for [`Self::with_rollback_condition`].
-    #[deprecated(note = "use `.with_rollback_condition(...)` instead")]
-    pub fn add_should_rollback(self, should_rollback: ShouldRollbackFn<C>) -> Self
-    where
-        C: SyncComponent,
-    {
-        self.with_rollback_condition(should_rollback)
     }
 
     /// Route replicated writes into confirmed history while an entity is
@@ -1024,109 +947,6 @@ impl<C> PredictionRegistrationExt<C> for ComponentRegistration<'_, C> {
         self
     }
 
-    fn add_prediction(self) -> Self
-    where
-        C: SyncComponent,
-    {
-        if !self.app.world().contains_resource::<PredictionRegistry>() {
-            trace!(
-                "Skipping prediction registration for component {:?} because PredictionPlugin is not present",
-                DebugName::type_name::<C>()
-            );
-            return self;
-        }
-        self.app.register_marker_with::<Predicted>(MarkerConfig {
-            priority: 100,
-            need_history: true,
-        });
-        self.app
-            .set_marker_fns::<Predicted, C>(write_history::<C>, remove_history::<C>);
-        // A prespawned entity can receive replicated component data before the
-        // server match has inserted `Predicted`. Keep that authoritative data in
-        // history so it cannot overwrite the live locally-predicted component.
-        self.app.register_marker_with::<PreSpawned>(MarkerConfig {
-            priority: 100,
-            need_history: true,
-        });
-        self.app
-            .set_marker_fns::<PreSpawned, C>(write_history::<C>, remove_history::<C>);
-        let prediction_history_id = self
-            .app
-            .world_mut()
-            .register_component::<PredictionHistory<C>>();
-        let confirmed_history_id = self
-            .app
-            .world_mut()
-            .register_component::<ConfirmedHistory<C>>();
-        let mut registry = self.app.world_mut().resource_mut::<PredictionRegistry>();
-        trace!(
-            "Adding prediction for component {:?}",
-            DebugName::type_name::<C>()
-        );
-        registry.register::<C>(prediction_history_id, confirmed_history_id);
-        // TODO: how do we avoid the server adding the prediction systems?
-        //   do we need to make sure that the Protocol runs after the client/server plugins are added?
-        add_prediction_systems::<C>(self.app);
-
-        let mut registry = self.app.world_mut().resource_mut::<ComponentRegistry>();
-        let metadata = registry
-            .component_metadata_map
-            .get_mut(&ComponentKind::of::<C>())
-            .unwrap();
-        metadata.replication.as_mut().unwrap().set_predicted(true);
-        // metadata.serialization.as_mut().unwrap().add_clone::<C>();
-        self
-    }
-
-    fn add_prediction_diff(self) -> Self
-    where
-        C: SyncComponent + RepliconDiffable,
-    {
-        if !self.app.world().contains_resource::<PredictionRegistry>() {
-            trace!(
-                "Skipping diff prediction registration for component {:?} because PredictionPlugin is not present",
-                DebugName::type_name::<C>()
-            );
-            return self;
-        }
-        self.app.register_marker_with::<Predicted>(MarkerConfig {
-            priority: 100,
-            need_history: true,
-        });
-        self.app
-            .set_marker_fns::<Predicted, C>(write_history_diff::<C>, remove_history::<C>);
-        self.app.register_marker_with::<PreSpawned>(MarkerConfig {
-            priority: 100,
-            need_history: true,
-        });
-        self.app
-            .set_marker_fns::<PreSpawned, C>(write_history_diff::<C>, remove_history::<C>);
-        let prediction_history_id = self
-            .app
-            .world_mut()
-            .register_component::<PredictionHistory<C>>();
-        let confirmed_history_id = self
-            .app
-            .world_mut()
-            .register_component::<ConfirmedHistory<C>>();
-        let mut registry = self.app.world_mut().resource_mut::<PredictionRegistry>();
-        trace!(
-            "Adding diff prediction for component {:?}",
-            DebugName::type_name::<C>()
-        );
-        registry.register::<C>(prediction_history_id, confirmed_history_id);
-        add_prediction_systems::<C>(self.app);
-        crate::plugin::add_prediction_diff_systems::<C>(self.app);
-
-        let mut registry = self.app.world_mut().resource_mut::<ComponentRegistry>();
-        let metadata = registry
-            .component_metadata_map
-            .get_mut(&ComponentKind::of::<C>())
-            .unwrap();
-        metadata.replication.as_mut().unwrap().set_predicted(true);
-        self
-    }
-
     fn custom_correction(self) -> Self
     where
         C: SyncComponent,
@@ -1144,14 +964,6 @@ impl<C> PredictionRegistrationExt<C> for ComponentRegistration<'_, C> {
             .resource_mut::<PredictionRegistry>()
             .custom_correction::<C>();
         self
-    }
-
-    #[allow(deprecated)]
-    fn enable_correction(self) -> Self
-    where
-        C: SyncComponent,
-    {
-        self.custom_correction()
     }
 
     fn add_correction(self) -> Self
@@ -1196,44 +1008,12 @@ impl<C> PredictionRegistrationExt<C> for ComponentRegistration<'_, C> {
         correction::add_correction_systems::<C, D>(self.app);
         self
     }
-
-    fn add_should_rollback(self, should_rollback: ShouldRollbackFn<C>) -> Self
-    where
-        C: SyncComponent,
-    {
-        let prediction_history_id = self
-            .app
-            .world_mut()
-            .register_component::<PredictionHistory<C>>();
-        let confirmed_history_id = self
-            .app
-            .world_mut()
-            .register_component::<ConfirmedHistory<C>>();
-        // skip if there is no PredictionRegistry (i.e. the PredictionPlugin wasn't added)
-        let Some(mut registry) = self
-            .app
-            .world_mut()
-            .get_resource_mut::<PredictionRegistry>()
-        else {
-            return self;
-        };
-        registry.register::<C>(prediction_history_id, confirmed_history_id);
-        registry.set_should_rollback::<C>(should_rollback);
-        self
-    }
 }
 
 pub trait PredictionAppRegistrationExt {
     /// Enable rollback for a component that is local-only and is not replicated
     /// by Replicon.
     fn local_rollback<C: SyncComponent>(&mut self) -> LocalRollbackComponentRegistration<'_, C>;
-
-    /// Enable rollbacks for a component that is not networked.
-    #[deprecated(note = "use `app.local_rollback::<C>()` instead")]
-    fn add_rollback<C: SyncComponent>(&mut self) -> ComponentRegistration<'_, C>;
-
-    #[deprecated(note = "use `app.resource::<R>().local_rollback()` instead")]
-    fn add_resource_rollback<R: Resource<Mutability = Mutable> + Clone>(&mut self);
 }
 
 fn register_prediction_metadata<C: SyncComponent>(app: &mut App) {
@@ -1293,14 +1073,6 @@ fn add_local_rollback<C: SyncComponent>(app: &mut App) -> ComponentRegistration<
 impl PredictionAppRegistrationExt for App {
     fn local_rollback<C: SyncComponent>(&mut self) -> LocalRollbackComponentRegistration<'_, C> {
         LocalRollbackComponentRegistration::new(add_local_rollback::<C>(self))
-    }
-
-    fn add_rollback<C: SyncComponent>(&mut self) -> ComponentRegistration<'_, C> {
-        add_local_rollback::<C>(self)
-    }
-
-    fn add_resource_rollback<R: Resource<Mutability = Mutable> + Clone>(&mut self) {
-        self.resource::<R>().local_rollback();
     }
 }
 
@@ -1531,6 +1303,164 @@ fn remove_history<C: SyncComponent>(ctx: &mut RemoveCtx, entity: &mut DeferredEn
             .resource_mut::<StateRollbackMetadata>()
             .record_mismatch(tick);
     }
+}
+
+fn initialize_prediction<'a, C: SyncComponent>(
+    registration: ComponentRegistration<'a, C>,
+) -> ComponentRegistration<'a, C> {
+    if !registration
+        .app
+        .world()
+        .contains_resource::<PredictionRegistry>()
+    {
+        trace!(
+            "Skipping prediction registration for component {:?} because PredictionPlugin is not present",
+            DebugName::type_name::<C>()
+        );
+        return registration;
+    }
+    registration
+        .app
+        .register_marker_with::<Predicted>(MarkerConfig {
+            priority: 100,
+            need_history: true,
+        });
+    registration
+        .app
+        .set_marker_fns::<Predicted, C>(write_history::<C>, remove_history::<C>);
+    // A prespawned entity can receive replicated component data before the
+    // server match has inserted `Predicted`. Keep that authoritative data in
+    // history so it cannot overwrite the live locally-predicted component.
+    registration
+        .app
+        .register_marker_with::<PreSpawned>(MarkerConfig {
+            priority: 100,
+            need_history: true,
+        });
+    registration
+        .app
+        .set_marker_fns::<PreSpawned, C>(write_history::<C>, remove_history::<C>);
+    let prediction_history_id = registration
+        .app
+        .world_mut()
+        .register_component::<PredictionHistory<C>>();
+    let confirmed_history_id = registration
+        .app
+        .world_mut()
+        .register_component::<ConfirmedHistory<C>>();
+    let mut registry = registration
+        .app
+        .world_mut()
+        .resource_mut::<PredictionRegistry>();
+    trace!(
+        "Adding prediction for component {:?}",
+        DebugName::type_name::<C>()
+    );
+    registry.register::<C>(prediction_history_id, confirmed_history_id);
+    // TODO: how do we avoid the server adding the prediction systems?
+    //   do we need to make sure that the Protocol runs after the client/server plugins are added?
+    add_prediction_systems::<C>(registration.app);
+
+    let mut registry = registration
+        .app
+        .world_mut()
+        .resource_mut::<ComponentRegistry>();
+    let metadata = registry
+        .component_metadata_map
+        .get_mut(&ComponentKind::of::<C>())
+        .unwrap();
+    metadata.replication.as_mut().unwrap().set_predicted(true);
+    // metadata.serialization.as_mut().unwrap().add_clone::<C>();
+    registration
+}
+
+fn initialize_diff_prediction<'a, C: SyncComponent + RepliconDiffable>(
+    registration: ComponentRegistration<'a, C>,
+) -> ComponentRegistration<'a, C> {
+    if !registration
+        .app
+        .world()
+        .contains_resource::<PredictionRegistry>()
+    {
+        trace!(
+            "Skipping diff prediction registration for component {:?} because PredictionPlugin is not present",
+            DebugName::type_name::<C>()
+        );
+        return registration;
+    }
+    registration
+        .app
+        .register_marker_with::<Predicted>(MarkerConfig {
+            priority: 100,
+            need_history: true,
+        });
+    registration
+        .app
+        .set_marker_fns::<Predicted, C>(write_history_diff::<C>, remove_history::<C>);
+    registration
+        .app
+        .register_marker_with::<PreSpawned>(MarkerConfig {
+            priority: 100,
+            need_history: true,
+        });
+    registration
+        .app
+        .set_marker_fns::<PreSpawned, C>(write_history_diff::<C>, remove_history::<C>);
+    let prediction_history_id = registration
+        .app
+        .world_mut()
+        .register_component::<PredictionHistory<C>>();
+    let confirmed_history_id = registration
+        .app
+        .world_mut()
+        .register_component::<ConfirmedHistory<C>>();
+    let mut registry = registration
+        .app
+        .world_mut()
+        .resource_mut::<PredictionRegistry>();
+    trace!(
+        "Adding diff prediction for component {:?}",
+        DebugName::type_name::<C>()
+    );
+    registry.register::<C>(prediction_history_id, confirmed_history_id);
+    add_prediction_systems::<C>(registration.app);
+    crate::plugin::add_prediction_diff_systems::<C>(registration.app);
+
+    let mut registry = registration
+        .app
+        .world_mut()
+        .resource_mut::<ComponentRegistry>();
+    let metadata = registry
+        .component_metadata_map
+        .get_mut(&ComponentKind::of::<C>())
+        .unwrap();
+    metadata.replication.as_mut().unwrap().set_predicted(true);
+    registration
+}
+
+fn configure_rollback_condition<'a, C: SyncComponent>(
+    registration: ComponentRegistration<'a, C>,
+    should_rollback: ShouldRollbackFn<C>,
+) -> ComponentRegistration<'a, C> {
+    let prediction_history_id = registration
+        .app
+        .world_mut()
+        .register_component::<PredictionHistory<C>>();
+    let confirmed_history_id = registration
+        .app
+        .world_mut()
+        .register_component::<ConfirmedHistory<C>>();
+    // skip if there is no PredictionRegistry (i.e. the PredictionPlugin wasn't added)
+    let Some(mut registry) = registration
+        .app
+        .world_mut()
+        .get_resource_mut::<PredictionRegistry>()
+    else {
+        return registration;
+    };
+    registry.register::<C>(prediction_history_id, confirmed_history_id);
+    registry.set_should_rollback::<C>(should_rollback);
+    registration
 }
 
 #[cfg(test)]

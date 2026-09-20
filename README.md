@@ -1,5 +1,7 @@
 # Lightyear
 
+Maintained fork behavior and retirement obligations: [fork contracts](docs/fork/CONTRACTS.md). Validation is local-only; see [safe local tasks](LOCAL_VALIDATION.md).
+
 [![crates.io](https://img.shields.io/crates/v/lightyear)](https://crates.io/crates/lightyear)
 [![docs.rs](https://docs.rs/lightyear/badge.svg)](https://docs.rs/lightyear)
 [![codecov](https://codecov.io/gh/cBournhonesque/lightyear/branch/main/graph/badge.svg?token=N1G28NQB1L)](https://codecov.io/gh/cBournhonesque/lightyear)
@@ -91,15 +93,7 @@ Workspace crate sources live under `crates/`, grouped by role. Directory names d
       crates such as `avian`
 
 
-## Supported bevy version
+## Current engine
 
-| Lightyear | Bevy |
-|-----------|------|
-| 0.28-0.29 | 0.19 |
-| 0.26-0.27 | 0.18 |
-| 0.25      | 0.17 |
-| 0.20-0.24 | 0.16 |
-| 0.18-0.19 | 0.15 |
-| 0.16-0.17 | 0.14 |
-| 0.10-0.15 | 0.13 |
-| 0.1-0.9   | 0.12 |
+This checkout targets Bevy 0.19.1 and the reviewed Lightyear 0.29 source.
+Current manifests and the local lockfile define the dependency graph.

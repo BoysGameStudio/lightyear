@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use core::time::Duration;
 use lightyear_prediction::Predicted;
 use lightyear_prediction::correction::Correction;
-use lightyear_prediction::plugin::PredictionSet;
+use lightyear_prediction::plugin::PredictionSystems;
 use lightyear_prediction::predicted_history::PredictionHistory;
 use lightyear_replication::components::Confirmed;
 use lightyear_replication::prelude::ReplicationSet;
@@ -37,7 +37,7 @@ fn setup(
         PreUpdate,
         trigger_rollback_system
             .after(ReplicationSet::Receive)
-            .before(PredictionSet::CheckRollback),
+            .before(PredictionSystems::CheckRollback),
     );
     stepper.init();
     let tick = stepper.client_tick(0);

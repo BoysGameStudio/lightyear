@@ -85,8 +85,7 @@ use lightyear_transport::prelude::ChannelRegistry;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 
-#[deprecated(note = "Use InputSystems instead")]
-pub type InputSet = InputSystems;
+
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone, Copy)]
 pub enum InputSystems {
     // RUN-FIXED-MAIN-LOOP UPDATE
@@ -175,7 +174,7 @@ impl<S: ActionStateSequence + MapEntities> Plugin for ClientInputPlugin<S> {
         //  RunFixedMainLoopSystems::BeforeFixedMainLoop to ensure that the local leafwing `states` have
         //  been switched to the `fixed_update` state (see https://github.com/Leafwing-Studios/leafwing-input-manager/blob/v0.16/src/plugin.rs#L170)
         //  We can move this system back in PreUpdate if we drop leafwing support.
-        //  Conveniently, this also ensures that we run this after MessageSet::Receive.
+        //  Conveniently, this also ensures that we run this after MessageSystems::Receive.
         app.configure_sets(
             PreUpdate,
             InputSystems::ReceiveInputMessages
@@ -229,7 +228,7 @@ impl<S: ActionStateSequence + MapEntities> Plugin for ClientInputPlugin<S> {
                 InputSystems::ReceiveInputMessages
                     .after(MessageSystems::Receive)
                     // NOTE: there is no point in running this after ReplicationSet::Receive, because even if we spawned the entity
-                    //  before the corresponding input entity, entity-mapping is applied in MessageSet::Receive and would fail
+                    //  before the corresponding input entity, entity-mapping is applied in MessageSystems::Receive and would fail
                     .before(RollbackSystems::Check),
             );
             app.add_systems(
@@ -266,7 +265,7 @@ impl<S: ActionStateSequence + MapEntities> Plugin for ClientInputPlugin<S> {
         app.add_systems(
             PostUpdate,
             (
-                // TODO: instead, store directly in MessageSender, SyncSet::Sync before MessageSet::Send and register an observer to update the ticks from MessageSender directly!
+                // TODO: instead, store directly in MessageSender, SyncSystems::Sync before MessageSystems::Send and register an observer to update the ticks from MessageSender directly!
                 prepare_input_message::<S>.in_set(InputSystems::PrepareInputMessage),
                 clean_buffers::<S>.in_set(InputSystems::CleanUp),
                 send_input_messages::<S>.in_set(InputSystems::SendInputMessage),
@@ -731,7 +730,7 @@ impl<A> Default for MessageBuffer<A> {
 
 /// Take the input buffer, and prepare the input message to send to the server.
 ///
-/// This runs once per frame in PostUpdate. It needs to run before SyncSet::Sync, because we buffer
+/// This runs once per frame in PostUpdate. It needs to run before SyncSystems::Sync, because we buffer
 /// the input in a MessageBuffer, and if a `LocalTimelineShift` triggers, we want to adjust the
 /// ticks from the `InputMessage`s.
 fn prepare_input_message<S: ActionStateSequence>(
@@ -1387,8 +1386,8 @@ fn send_input_messages<S: ActionStateSequence>(
             };
             for mut message in message_buffer.0.drain(..) {
                 // if lag compensation is enabled, we send the current delay to the server
-                // (this runs here because the delay is only correct after the SyncSet has run)
-                // TODO: or should we actually use the interpolation_delay BEFORE SyncSet
+                // (this runs here because the delay is only correct after the SyncSystems has run)
+                // TODO: or should we actually use the interpolation_delay BEFORE SyncSystems
                 //  because the user is reacting to stuff from the previous frame?
                 #[cfg(feature = "interpolation")]
                 if input_config.lag_compensation {

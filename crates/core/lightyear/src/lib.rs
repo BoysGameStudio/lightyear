@@ -200,7 +200,6 @@ You can remove the [`Replicate`](prelude::Replicate) component to pause the repl
 ### Reacting to replication events
 
 On the receiver side, entities that are replicated from a remote peer will have the [`Remote`](prelude::client::Remote) marker component.
-For backwards compatibility, [`client::Replicated`](prelude::client::Replicated) is a deprecated alias for [`Remote`](prelude::client::Remote).
 
 You can use to react to components being inserted via replication.
 ```rust
@@ -285,7 +284,7 @@ for bundles such as `(Position, Rotation)` when several components need to be
 sampled together. See [`interpolation`] for the detailed rule model,
 priorities, filters, bundle interpolation, and frame-interpolation reuse.
 
-[`Replicated`]: prelude::Replicated
+[`Remote`]: prelude::client::Remote
 [`lightyear_steam`]: lightyear_steam
  */
 //!
@@ -479,11 +478,7 @@ pub mod prelude {
         #[cfg(feature = "replication")]
         pub use lightyear_replication::prelude::client::Remote;
 
-        #[cfg(feature = "replication")]
-        #[deprecated(
-            note = "use `Remote` instead; `client::Replicated` is a backwards-compatibility alias for receiver-side replicated entities"
-        )]
-        pub type Replicated = Remote;
+
 
         #[cfg(feature = "netcode")]
         pub use lightyear_netcode::prelude::client::*;

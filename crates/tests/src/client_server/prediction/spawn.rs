@@ -14,7 +14,7 @@ use tracing::info;
 /// 1) Parent/Child get spawned on client
 /// 2) All components are inserted on child, including ParentSync (which is mapped correctly)
 ///    and ShouldBePredicted
-/// 3) In PredictionSet::Spawn, child-predicted is spawned, and Confirmed is added on child
+/// 3) In PredictionSystems::Spawn, child-predicted is spawned, and Confirmed is added on child
 /// 4) Because Confirmed is added, we send an event to sync components from Confirmed to child-predicted
 ///    NOTE: we cannot sync the components at this point, because the parent-predicted entity is not spawned
 ///    so the ParentSync component cannot be mapped properly when it's synced to the child-predicted entity!

@@ -32,8 +32,7 @@ use lightyear_utils::timer_gauge;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
 
-#[deprecated(note = "Use TransportSystems instead")]
-pub type TransportSet = TransportSystems;
+
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone, Copy)]
 pub enum TransportSystems {

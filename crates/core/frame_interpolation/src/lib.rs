@@ -92,8 +92,7 @@ pub enum FrameInterpolationSystems {
     Interpolate,
 }
 
-#[deprecated(note = "Use FrameInterpolationSystems instead")]
-pub type FrameInterpolationSet = FrameInterpolationSystems;
+
 
 /// If present, this marker indicates that we will skip applying frame interpolation.
 ///
@@ -326,10 +325,9 @@ pub(crate) fn apply_frame_interpolation(
 
 /// Common frame interpolation exports.
 pub mod prelude {
-    #[allow(deprecated)]
     pub use crate::{
         FrameInterpolate, FrameInterpolationHistory, FrameInterpolationPlugin,
-        FrameInterpolationSet, FrameInterpolationSystems, SkipFrameInterpolation,
+        FrameInterpolationSystems, SkipFrameInterpolation,
         linear_frame_interpolation,
     };
 }

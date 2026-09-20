@@ -29,6 +29,7 @@ use lightyear_connection::network_topology::{NetworkTopology, NetworkingMetadata
 use lightyear_connection::server::Started;
 #[cfg(any(feature = "p2p", feature = "server"))]
 use lightyear_core::id::RemoteId;
+#[cfg(feature = "server")]
 use lightyear_core::prelude::LocalTimeline;
 use lightyear_core::tick::Tick;
 #[cfg(feature = "client")]
@@ -340,6 +341,7 @@ impl ChecksumSendPlugin {
                     trace!(?tick, ?link, "checksum NOT sent: no MessageSender on the client link");
                 }
             }
+            #[cfg(feature = "p2p")]
             return;
         }
 

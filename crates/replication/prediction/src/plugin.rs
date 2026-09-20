@@ -46,8 +46,7 @@ fn initialize_prediction_resources(
     commands.init_resource::<LastConfirmedInput>();
 }
 
-#[deprecated(note = "Use PredictionSystems instead")]
-pub type PredictionSet = PredictionSystems;
+
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone, Copy)]
 pub enum PredictionSystems {
@@ -120,21 +119,6 @@ pub fn add_non_networked_rollback_systems<C: Component<Mutability = Mutable> + C
     );
 }
 
-/// Enables rollbacking a resource. As a rule of thumb, only use on resources
-/// that are only modified by systems in the `FixedMain` schedule. This is
-/// because rollbacks only run the `FixedMain` schedule. For example, the
-/// `Time<Fixed>` resource is modified by
-/// `bevy_time::fixed::run_fixed_main_schedule()` which is run outside of the
-/// `FixedMain` schedule and so it should not be used in this function.
-///
-/// As a side note, the `Time<Fixed>` resource is already rollbacked internally
-/// by lightyear so that it can be used accurately within systems within the
-/// `FixedMain` schedule during a rollback.
-#[deprecated(note = "use `app.resource::<R>().local_rollback()` instead")]
-pub fn add_resource_rollback_systems<R: Resource<Mutability = Mutable> + Clone>(app: &mut App) {
-    add_non_networked_rollback_systems::<R>(app);
-}
-
 pub(crate) fn add_prediction_systems<C: SyncComponent>(app: &mut App) {
     #[cfg(feature = "metrics")]
     {
@@ -162,7 +146,7 @@ pub(crate) fn add_prediction_systems<C: SyncComponent>(app: &mut App) {
         (
             // for SyncMode::Full, we need to check if we need to rollback.
             // TODO: for mode=simple/once, we still need to re-add the component if the entity ends up not being despawned!
-            // check_rollback::<C>.in_set(PredictionSet::CheckRollback),
+            // check_rollback::<C>.in_set(PredictionSystems::CheckRollback),
             prepare_rollback::<C>.in_set(RollbackSystems::Prepare),
             repair_frame_interpolation_history::<C>
                 .in_set(RollbackSystems::EndRollback)

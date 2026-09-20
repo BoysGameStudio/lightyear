@@ -302,9 +302,7 @@ pub struct LinkStats {
     pub jitter: Duration,
 }
 
-#[deprecated(note = "Use LinkSystems instead")]
-/// Deprecated alias for [`LinkSystems`].
-pub type LinkSet = LinkSystems;
+
 
 /// System sets for `Link`-related operations.
 ///
@@ -323,9 +321,7 @@ pub enum LinkSystems {
     Send,
 }
 
-#[deprecated(note = "Use LinkReceiveSystems instead")]
-/// Deprecated alias for [`LinkReceiveSystems`].
-pub type LinkReceiveSet = LinkReceiveSystems;
+
 
 /// System sets that make up [`LinkSystems::Receive`].
 ///

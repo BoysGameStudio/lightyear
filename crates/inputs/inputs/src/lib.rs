@@ -24,6 +24,14 @@ pub mod server;
 
 pub(crate) const HISTORY_DEPTH: u32 = 20;
 
+/// Retained ticks used when rebuilding server input rebroadcasts.
+///
+/// Consumers must keep their rollback horizon plus its current tick within this
+/// fixed fork limit. This is not proof that an arbitrary application's pacing or
+/// retention settings are safe. The reference consumer asserts this relationship
+/// at compile time. See the fork contract ledger before changing the value.
+pub const SERVER_REBROADCAST_HISTORY_DEPTH: u32 = 101;
+
 /// Default channel to send inputs from client to server. This is a Sequenced Unreliable channel.
 /// A marker struct for the default channel used to send inputs from client to server.
 ///

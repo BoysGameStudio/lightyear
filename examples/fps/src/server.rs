@@ -30,7 +30,7 @@ impl Plugin for ExampleServerPlugin {
         app.add_systems(Startup, spawn_bots);
         app.add_observer(handle_new_client);
         app.add_observer(spawn_player);
-        // the lag compensation systems need to run after LagCompensationSet::UpdateHistory
+        // the lag compensation systems need to run after LagCompensationSystems::UpdateHistory
         app.add_systems(FixedUpdate, interpolated_bot_movement);
         app.add_systems(
             FixedPostUpdate,

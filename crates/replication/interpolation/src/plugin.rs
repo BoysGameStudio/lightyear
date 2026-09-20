@@ -69,8 +69,7 @@ impl ToBytes for InterpolationDelay {
 #[derive(Default)]
 pub struct InterpolationPlugin;
 
-#[deprecated(note = "Use InterpolationSystems instead")]
-pub type InterpolationSet = InterpolationSystems;
+
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone, Copy)]
 pub enum InterpolationSystems {

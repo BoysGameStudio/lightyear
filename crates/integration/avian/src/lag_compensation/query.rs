@@ -23,7 +23,7 @@ use {
 /// A system parameter for performing [spatial queries](spatial_query) while doing
 /// lag compensation.
 ///
-/// Systems using this parameter should run after the [`LagCompensationSet::UpdateHistory`](super::history::LagCompensationSystems) set.
+/// Systems using this parameter should run after the [`LagCompensationSystems::UpdateHistory`](super::history::LagCompensationSystems) set.
 #[derive(SystemParam)]
 pub struct LagCompensationSpatialQuery<'w, 's> {
     pub timeline: Res<'w, LocalTimeline>,
