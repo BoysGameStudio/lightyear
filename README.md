@@ -1,30 +1,43 @@
-# Lightyear
+# Lightyear — maintained networking fork
 
-Maintained fork behavior and retirement obligations: [fork contracts](docs/fork/CONTRACTS.md). Validation is local-only; see [safe local tasks](LOCAL_VALIDATION.md).
+Lightyear provides Bevy networking: transports and connections, buffered input,
+replication, prediction/rollback and interpolation. It supports client/server,
+host-client and P2P arrangements. Deterministic replication requires a deterministic
+application simulation.
 
-[![crates.io](https://img.shields.io/crates/v/lightyear)](https://crates.io/crates/lightyear)
-[![docs.rs](https://docs.rs/lightyear/badge.svg)](https://docs.rs/lightyear)
-[![codecov](https://codecov.io/gh/cBournhonesque/lightyear/branch/main/graph/badge.svg?token=N1G28NQB1L)](https://codecov.io/gh/cBournhonesque/lightyear)
+This BoysGameStudio fork targets the Bevy/Lightyear versions in its manifests
+(currently Bevy 0.19.1 / Lightyear 0.29). Its input provenance, rebroadcast and
+rollback guarantees are described in [fork contracts](docs/fork/CONTRACTS.md).
+Upstream registry releases and hosted docs do not establish those fork guarantees.
 
-A library for writing server-authoritative multiplayer games with [Bevy](https://bevyengine.org/). Compatible with wasm
-via WebTransport.
+## Start here
 
-## Getting started
-
-For Bevy 0.19, add Lightyear to your project with:
+For a sibling checkout:
 
 ```toml
 [dependencies]
-lightyear = "0.29"
+lightyear = { path = "../lightyear/crates/core/lightyear" }
 ```
 
-You can first check out the [examples](https://github.com/cBournhonesque/lightyear/tree/main/examples).
+Select client/server, input and transport features for the application; the
+[facade manifest](crates/core/lightyear/Cargo.toml) owns the feature names.
+For a git dependency, select this fork and an explicit reviewed revision instead
+of copying a registry-only version requirement. Keep dependent engine sources coherent.
 
-To quickly get started, you can follow
-this [tutorial](https://cbournhonesque.github.io/lightyear/book/tutorial/title.html), which re-creates
-the [simple_box](https://github.com/cBournhonesque/lightyear/tree/main/examples/simple_box) example.
+Start with [example setup](examples/README.md) and
+[simple_box](examples/simple_box/README.md). The [book](book/src/SUMMARY.md)
+explains concepts and routes to this checkout's examples. Run commands from the
+workspace root after [dependency preparation](LOCAL_VALIDATION.md).
 
-You can also find more information in this WIP [book](https://cbournhonesque.github.io/lightyear/book/).
+## Documentation
+
+- [Fork contracts](docs/fork/CONTRACTS.md): maintained semantics and host obligations.
+- [Local validation](LOCAL_VALIDATION.md): selective checks and command side effects.
+- [Allocation regression](docs/allocation-regression.md): workload and measurement scope.
+- [Agent instructions](AGENTS.md).
+- [Upstream project](https://github.com/cBournhonesque/lightyear) and
+  [upstream API reference](https://docs.rs/lightyear): distinguish upstream from this fork.
+- [MIT](LICENSE-MIT) / [Apache-2.0](LICENSE-APACHE) licenses.
 
 ## Repository layout
 
@@ -38,62 +51,3 @@ Workspace crate sources live under `crates/`, grouped by role. Directory names d
 - `crates/transport`: serialization, transport, and message crates
 - `crates/integration`: Bevy ecosystem integrations such as Avian
 - `crates/platform`, `crates/deterministic`, `crates/tools`, and `crates/tests`: platform support, deterministic replication, tooling, and test support
-
-## Related projects
-
-- [lightyear-template](https://github.com/Piefayth/lightyear-template/tree/main): opiniated template for a bevy + lightyear starter project
-
-### Games
-
-- [Lumina](https://github.com/nixon-voxell/lumina)
-- [cycles.io](https://github.com/cBournhonesque/jam5) for bevy jam 5: https://cbournhonesque.itch.io/cyclesio
-
-
-## Features
-
-
-- Transport-agnostic: *Lightyear* is compatible with a number of IO backends, including:
-    - UDP sockets
-    - Uses [`aeronet`](https://github.com/aecsocket/aeronet) for WebSocket, Steam and WebTransport support
-- Serialization
-    - *Lightyear* uses `postcard` as a default serializer, but you can provide your own serialization function
-- Message passing
-    - *Lightyear* supports sending packets with different guarantees of ordering and reliability through the use of
-      channels.
-    - Packet fragmentation (for messages larger than ~1200 bytes) is supported
-- Input handling
-    - *Lightyear* has special handling for player inputs (mouse presses, keyboards).
-      They are buffered every tick on the `Client`, and *lightyear* makes sure that the client input for tick `N` will
-      be processed on tick `N` on the server.
-      Inputs are protected against packet-loss: each packet will contain the client inputs for the last few frames.
-    - With the `leafwing` feature, there is a special integration with
-      the [`leafwing-input-manager`](https://github.com/Leafwing-Studios/leafwing-input-manager) crate, where
-      your `leafwing` inputs are networked for you!
-    - Also supports the [`bevy-enhanced-input`](https://github.com/projectharmonia/bevy_enhanced_input) crate!
-- Deterministic replication
-    - *Lightyear* supports deterministic replication when only inputs are replicated. The simulation needs to be deterministic.
-      The deterministic replication is compatible with both lockstep and prediction/rollback.
-- World Replication
-    - `lightyear` uses [`bevy_replicon`](https://github.com/simgine/bevy_replicon) to enable world replication features
-      (replication, interest management, pre-spawning, etc.)
-- Advanced replication
-    - **Client-side prediction**: with just a one-line change, you can enable client-prediction with rollback on the
-      client, so that your inputs can feel responsive
-    - **Snapshot interpolation**: with just a one-line change, you can enable Snapshot interpolation so that entities
-      are smoothly interpolated even if replicated infrequently.
-    - **Input Delay**: you can add a custom amount of input-delay as a trade-off between having a more responsive game
-      or more miss-predictions
-    - **Bandwidth Management**: you can set a cap to the bandwidth for the connection. Then messages will be sent in
-      decreasing order of priority (that you can set yourself), with a priority-accumulation scheme
-    - **Lag Compensation** is available so that predicted entities can interact with interpolated entities (used most often for fps games)
-- Various topologies supported
-    - You can run your app in client-server mode or in P2P mode. You can also have a client act as the server (host-client mode).
-- Examples
-    - *Lightyear* has plenty of examples demonstrating all these features, as well as the integration with other bevy
-      crates such as `avian`
-
-
-## Current engine
-
-This checkout targets Bevy 0.19.1 and the reviewed Lightyear 0.29 source.
-Current manifests and the local lockfile define the dependency graph.

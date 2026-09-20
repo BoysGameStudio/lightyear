@@ -6,7 +6,7 @@ Here are some of the common components:
 - [`Transport`](https://docs.rs/lightyear/latest/lightyear/prelude/struct.Transport.html) adds the capability of setting up various Channels that each provide different reliability/ordering guarantees for a group of bytes
 - [`MessageManager`](https://docs.rs/lightyear/latest/lightyear/prelude/struct.MessageManager.html), [`MessageSender<M>`](https://docs.rs/lightyear/latest/lightyear/prelude/struct.MessageSender.html), [`MessageReceiver<M>`](https://docs.rs/lightyear/latest/lightyear/prelude/struct.MessageReceiver.html) are used to send and receive messages over the network.
   A message is any rust type that can be serialized/deserialize into raw bytes.
-- [`ReplicationManager`](https://docs.rs/lightyear/latest/lightyear/prelude/struct.ReplicationManager.html) and [`ReplicationSender`](https://docs.rs/lightyear/latest/lightyear/prelude/struct.ReplicationSender.html) can be added to the entity to enable replicating entities and components over the network.
+- [`ReplicationSender`](https://docs.rs/lightyear/latest/lightyear/prelude/struct.ReplicationSender.html) can be added to the entity to enable replicating entities and components over the network.
 
 ## Link
 
@@ -46,7 +46,7 @@ For example if a message is added to the protocol with
 app.register_message::<Message1>()
   .add_direction(NetworkDirection::ServerToClient);
 ```
-then a `MessageReceive<Message1>` component will automatically be added to any `Client` entity.
+then a `MessageReceiver<Message1>` component will automatically be added to any `Client` entity.
 
 You can also just add the [`MessageReceiver<M>`] component directly to the client entity to receive messages of type `M` from the server.
 
@@ -70,7 +70,7 @@ let client = commands
         UdpIo::default(),
     ))
     .id();
-commands.trigger_targets(Connect, client);
+commands.trigger(Connect { entity: client });
 ```
 
 Let's walk through this:
@@ -99,7 +99,7 @@ let server = commands
         ServerUdpIo::default(),
     ))
     .id();
-commands.trigger_targets(Start, server);
+commands.trigger(Start { entity: server });
 ```
 
 We need to add `NetcodeServer` because we need a connection layer. This will automatically insert the [`Server`] component.

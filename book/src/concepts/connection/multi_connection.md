@@ -19,4 +19,7 @@ Another potential usage is to have a "ListenServer" setup where a client acts as
   - the other could be for example a UDP connection to allow other clients to connect to the server
 
 
-To achieve this, you can just provide multiple `NetConfig` when creating the `ServerConfig` that will be used to create the server.
+Configure transport/connection entities for the selected topology. Current setup
+is demonstrated by the [example helpers](../../../../examples/common/src/lib.rs);
+do not combine transports by constructing removed `NetConfig`/`ServerConfig` APIs.
+Each backend still needs its own platform features and environment prerequisites.

@@ -39,3 +39,29 @@ The host's compile-time horizon assertion intentionally consumes the exported fo
 constant. Publishing that host change requires publishing this fork revision first
 and updating the host's dependency lock; a local workbench path override is not a
 published registry/git release. Keep source provenance and role features separate.
+
+## Replicon bridge and confirmed history
+
+`crates/replication/replication/src/{client,server,channels}.rs` bridge Lightyear
+transport and Replicon messages. `RepliconChannelMap` keeps separate server/client
+channel namespaces: index zero in one namespace is not index zero in the other.
+The current bridge supports bidirectional channel mapping; channel registration
+in `channels.rs` owns ordering/reliability and direction.
+
+`send.rs` owns replication, prediction and interpolation targets through Replicon
+visibility. Prediction registration writes confirmed component history and detects
+mismatches; `rollback.rs` owns restoring that history. Fully received mutation ticks
+and per-entity explicit confirmation are different observations. An entity omitted
+from a fully received tick retains its last confirmed value under the protocol's
+acknowledgement/resend rules; that does not make an incomplete tick confirmed.
+Keep later confirmed values while discarding/resimulating invalid predictions.
+
+Prespawns use Replicon's `Signature` to map the server entity to an existing local
+candidate before updates. `PreSpawnedReceiver` retains timeout/synchronization/
+rollback bookkeeping; `PreSpawned::for_client` scopes mapping messages, not visibility.
+
+Current prediction and replication regression sources under `crates/tests/src/`
+own executable coverage. The old integration report's passing/ignored counts and
+speculative failure causes are not current results. Inspect current `#[ignore]`
+reasons when selecting a gate; static documentation work does not rerun the suite.
+Unresolved behavior requires a current reproduction, not restoration of an old TODO.

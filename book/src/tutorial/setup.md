@@ -37,7 +37,7 @@ This is where you define the "contract" of what is going to be sent across the n
 A protocol is composed of:
 
 - [Input](../concepts/advanced_replication/inputs.md): Defines the client's input type, i.e. the different actions that a user can perform (e.g. move, jump, shoot, etc)
-- [Message](../concepts/bevy_integration/events.md): Defines the message protocol, i.e. the messages that can be
+- [Message](../concepts/replication/protocol.md): Defines the message protocol, i.e. the messages that can be
   exchanged between the client and server
 - [Components](../concepts/replication/title.md): Defines the component protocol, i.e. the list of components that can be replicated between the client and server
 - [Channels](../concepts/reliability/channels.md): Defines channels that are used to send messages between the client and server

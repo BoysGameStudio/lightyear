@@ -6,19 +6,19 @@ Lightyear introduces the concept of a `Channel` to handle reliability.
 A `Channel` is a way to send packets with specific reliability, ordering and priority guarantees.
 
 You can add a channel to your protocol like so:
-```rust,noplayground
-#[derive(Channel)]
-struct MyChannel;
+```rust,ignore
+pub struct MyChannel;
 
-pub fn protocol() -> MyProtocol {
-    let mut p = MyProtocol::default();
-    p.add_channel::<MyChannel>(ChannelSettings {
-        mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
-        direction: ChannelDirection::Bidirectional,
-    });
-    p
-}
-``` 
+app.add_channel::<MyChannel>(ChannelSettings {
+    mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
+    ..Default::default()
+}).add_direction(NetworkDirection::Bidirectional);
+```
+
+The snippet belongs inside a protocol plugin with the Lightyear prelude imported.
+See [the current protocol](../../../../examples/simple_box/src/protocol.rs) for
+complete setup.
+
 
 ## Mode
 
@@ -37,4 +37,5 @@ Ordering:
 
 ## Direction
 
-The `direction` field can be used to restrict a `Channel` from sending packets from client->server or server->client.
+Use `.add_direction(NetworkDirection::...)` when registering a channel to select
+client-to-server, server-to-client or bidirectional traffic.
